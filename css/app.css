@@ -271,6 +271,9 @@ dialog::backdrop { background: rgba(0, 0, 0, .45); }
   cursor: pointer;
 }
 .seg-btn.active { background: var(--card); color: var(--accent); }
+/* 4 сегмента: даём меньше отступов, чтобы влезли на узком экране */
+.seg-wrap { flex: 1; }
+.seg-wrap .seg-btn { flex: 1; padding: 7px 6px; font-size: 13px; white-space: nowrap; }
 
 .pick-list {
   max-height: 32dvh;

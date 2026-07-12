@@ -24,6 +24,8 @@ let photoType = 'label';
 
 // черновик редактируемого блюда (пока открыт диалог блюда)
 let dishDraft = null;
+// выбранное блюдо в режиме «Блюдо» диалога добавления записи
+let entryDishId = null;
 
 // ---------- данные ----------
 
@@ -347,6 +349,16 @@ async function addDishToDiary(dish, percent) {
   toast(`Добавлено из блюда: ${count} ${count === 1 ? 'позиция' : 'позиц.'}`);
 }
 
+// Живое превью порции в режиме «Блюдо» диалога добавления записи.
+function updateDishEntryPreview() {
+  const preview = dlg.querySelector('#dishEntryPreview');
+  const dish = state.dishes.find(d => d.id === entryDishId);
+  if (!preview || !dish) return;
+  const t = dishTotals(dish.components || []);
+  const p = Math.max(0, num(dlg.querySelector('#dishEntryPercent').value)) / 100;
+  preview.textContent = `≈ ${fmt(t.grams * p, 1)} г · ${fmt(t.kcal * p)} ккал · Б ${fmt(t.protein * p, 1)} · Кл ${fmt(t.fiber * p, 1)} · Раст ${fmt(t.plant * p)}`;
+}
+
 async function renderStats() {
   const today = todayStr();
   const days = [];
@@ -490,13 +502,33 @@ function productListHTML(query, selectedId) {
     </button>`).join('');
 }
 
+function dishListHTML(query, selectedId) {
+  const q = query.trim().toLowerCase();
+  const list = q
+    ? state.dishes.filter(d => dishFullName(d).toLowerCase().includes(q))
+    : state.dishes;
+  if (!list.length) {
+    return state.dishes.length
+      ? '<p class="empty">Не найдено.</p>'
+      : '<p class="empty">Пока нет блюд. Создай их на вкладке «Блюда».</p>';
+  }
+  return list.map(d => {
+    const t = dishTotals(d.components || []);
+    return `<button type="button" class="pick${d.id === selectedId ? ' selected' : ''}" data-action="pick-dish-entry" data-id="${d.id}">
+      ${esc(dishFullName(d))}<span class="pick-sub">${fmt(t.grams)} г · ${fmt(t.kcal)} ккал</span>
+    </button>`;
+  }).join('');
+}
+
 function showEntryDialog() {
   photoState = { file: null, plateItems: null };
   photoType = 'label';
+  entryDishId = null;
   showDialog(`
     <div class="dlg-head">
-      <div class="seg">
-        <button type="button" class="seg-btn active" data-action="entry-mode" data-mode="base">Из базы</button>
+      <div class="seg seg-wrap">
+        <button type="button" class="seg-btn active" data-action="entry-mode" data-mode="base">Продукт</button>
+        <button type="button" class="seg-btn" data-action="entry-mode" data-mode="dish">🍲 Блюдо</button>
         <button type="button" class="seg-btn" data-action="entry-mode" data-mode="manual">Вручную</button>
         <button type="button" class="seg-btn" data-action="entry-mode" data-mode="photo">📷 Фото</button>
       </div>
@@ -523,6 +555,18 @@ function showEntryDialog() {
       <label class="check"><input type="checkbox" name="saveToBase" checked> сохранить в базу продуктов</label>
       <button type="submit" class="btn primary">Записать</button>
     </form>
+
+    <div id="entryDishForm" class="dlg-body" hidden>
+      <input type="search" id="dishEntrySearch" placeholder="Найти блюдо…" autocomplete="off">
+      <div id="dishEntryList" class="pick-list">${dishListHTML('')}</div>
+      <div id="dishEntryPortion" hidden>
+        <label>Съедено, % от блюда
+          <input id="dishEntryPercent" type="number" inputmode="decimal" min="0" max="100" value="100">
+        </label>
+        <p class="note" id="dishEntryPreview"></p>
+        <button type="button" class="btn primary" data-action="add-dish-entry">Записать в дневник</button>
+      </div>
+    </div>
 
     <div id="entryPhotoForm" class="dlg-body" hidden>
       <div class="seg">
@@ -560,6 +604,12 @@ function showEntryDialog() {
     dlg.querySelector('#dlgProductList').innerHTML =
       productListHTML(search.value, dlg.querySelector('#pickedId').value || null);
   });
+
+  const dishSearch = dlg.querySelector('#dishEntrySearch');
+  dishSearch.addEventListener('input', () => {
+    dlg.querySelector('#dishEntryList').innerHTML = dishListHTML(dishSearch.value, entryDishId);
+  });
+  dlg.querySelector('#dishEntryPercent').addEventListener('input', updateDishEntryPreview);
 
   dlg.querySelector('#entryBaseForm').addEventListener('submit', async ev => {
     ev.preventDefault();
@@ -970,8 +1020,19 @@ document.body.addEventListener('click', async ev => {
     dlg.querySelectorAll('[data-action="entry-mode"]').forEach(b =>
       b.classList.toggle('active', b.dataset.mode === mode));
     dlg.querySelector('#entryBaseForm').hidden = mode !== 'base';
+    dlg.querySelector('#entryDishForm').hidden = mode !== 'dish';
     dlg.querySelector('#entryManualForm').hidden = mode !== 'manual';
     dlg.querySelector('#entryPhotoForm').hidden = mode !== 'photo';
+  } else if (action === 'pick-dish-entry') {
+    entryDishId = id;
+    dlg.querySelector('#dishEntryList').innerHTML =
+      dishListHTML(dlg.querySelector('#dishEntrySearch').value, id);
+    dlg.querySelector('#dishEntryPortion').hidden = false;
+    updateDishEntryPreview();
+  } else if (action === 'add-dish-entry') {
+    const d = state.dishes.find(x => x.id === entryDishId);
+    if (!d) { toast('Сначала выбери блюдо'); return; }
+    await addDishToDiary(d, dlg.querySelector('#dishEntryPercent').value);
   } else if (action === 'photo-type') {
     photoType = el.dataset.ptype;
     dlg.querySelectorAll('[data-action="photo-type"]').forEach(b =>

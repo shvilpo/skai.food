@@ -1,4 +1,4 @@
-const VERSION = 'skai-food-v6';
+const VERSION = 'skai-food-v7';
 const SHELL = [
   './',
   './index.html',
