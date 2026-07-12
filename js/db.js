@@ -1,5 +1,5 @@
 const DB_NAME = 'skai-food';
-const DB_VER = 1;
+const DB_VER = 2;
 let dbPromise = null;
 
 export function openDB() {
@@ -17,6 +17,10 @@ export function openDB() {
       }
       if (!db.objectStoreNames.contains('settings')) {
         db.createObjectStore('settings', { keyPath: 'key' });
+      }
+      // v2: свои блюда
+      if (!db.objectStoreNames.contains('dishes')) {
+        db.createObjectStore('dishes', { keyPath: 'id' });
       }
     };
     req.onsuccess = () => resolve(req.result);

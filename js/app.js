@@ -10,6 +10,7 @@ const state = {
   date: todayStr(),
   products: [],
   entries: [],
+  dishes: [],
   targets: { ...DEFAULT_TARGETS },
   productQuery: '',
 };
@@ -20,6 +21,9 @@ const dlg = document.getElementById('dlg');
 // состояние режима «Фото» в диалоге добавления
 let photoState = { file: null, plateItems: null };
 let photoType = 'label';
+
+// черновик редактируемого блюда (пока открыт диалог блюда)
+let dishDraft = null;
 
 // ---------- данные ----------
 
@@ -32,6 +36,33 @@ async function refreshProducts() {
 async function refreshEntries() {
   state.entries = await db.entriesByDate(state.date);
   state.entries.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+}
+
+async function refreshDishes() {
+  state.dishes = await db.getAll('dishes');
+  // новые блюда — сверху (по дате готовки, затем по времени создания)
+  state.dishes.sort((a, b) =>
+    (b.date || '').localeCompare(a.date || '') || (b.createdAt || 0) - (a.createdAt || 0));
+}
+
+// Составное имя блюда: YYYY-MM-DD-Название
+function dishFullName(d) {
+  return `${d.date}-${d.name}`;
+}
+
+// Масса и КБЖУ блюда целиком (по сырым ингредиентам).
+function dishTotals(components) {
+  const t = { grams: 0, kcal: 0, protein: 0, fiber: 0, plant: 0 };
+  for (const c of components) {
+    const g = num(c.grams);
+    const k = g / 100;
+    t.grams += g;
+    t.kcal += (c.per100?.kcal || 0) * k;
+    t.protein += (c.per100?.protein || 0) * k;
+    t.fiber += (c.per100?.fiber || 0) * k;
+    t.plant += g * (c.plantPercent || 0) / 100;
+  }
+  return t;
 }
 
 async function loadTargets() {
@@ -65,6 +96,7 @@ function render() {
     b.classList.toggle('active', b.dataset.tab === state.tab));
   if (state.tab === 'diary') renderDiary();
   else if (state.tab === 'products') renderProducts();
+  else if (state.tab === 'dishes') renderDishes();
   else if (state.tab === 'stats') renderStats();
   else renderSettings();
 }
@@ -86,10 +118,10 @@ function renderDiary() {
     const n = entryNutrients(e);
     return `<button class="entry" data-action="edit-entry" data-id="${e.id}">
       <div class="entry-main">
-        <span class="entry-name">${esc(e.name)}</span>
-        <span class="entry-grams">${fmt(e.grams)} г</span>
+        <span class="entry-name">${e.fromDish ? '🍲 ' : ''}${esc(e.name)}</span>
+        <span class="entry-grams">${fmt(e.grams, 1)} г</span>
       </div>
-      <div class="entry-sub">${fmt(n.kcal)} ккал · Б ${fmt(n.protein, 1)} · Кл ${fmt(n.fiber, 1)} · Раст ${fmt(n.plant)}</div>
+      <div class="entry-sub">${fmt(n.kcal)} ккал · Б ${fmt(n.protein, 1)} · Кл ${fmt(n.fiber, 1)} · Раст ${fmt(n.plant)}${e.fromDish ? ` · из: ${esc(e.fromDish)}` : ''}</div>
     </button>`;
   }).join('');
 
@@ -143,6 +175,176 @@ function renderProducts() {
     // перерисовываем только список, чтобы не терять фокус
     view.querySelector('.entries').innerHTML = productListInner(input.value);
   });
+}
+
+// ---------- вкладка «Блюда» ----------
+
+function renderDishes() {
+  const rows = state.dishes.map(d => {
+    const t = dishTotals(d.components || []);
+    return `<button class="entry" data-action="open-dish" data-id="${d.id}">
+      <div class="entry-main">
+        <span class="entry-name">${esc(dishFullName(d))}</span>
+        <span class="entry-grams">${fmt(t.grams)} г</span>
+      </div>
+      <div class="entry-sub">${(d.components || []).length} прод. · всего ${fmt(t.kcal)} ккал · Б ${fmt(t.protein, 1)} · Кл ${fmt(t.fiber, 1)}</div>
+    </button>`;
+  }).join('');
+
+  view.innerHTML = `
+    <h2 class="section-title">Свои блюда</h2>
+    <p class="note">Блюдо — состав из сырых продуктов с граммовками. В дневник добавляется по проценту от приготовленного блюда: каждый ингредиент попадёт построчно в этой доле.</p>
+    <div class="entries">${rows || '<p class="empty">Пока нет блюд. Создай первое кнопкой ниже.</p>'}</div>
+    <button class="fab" data-action="add-dish">+ Блюдо</button>`;
+}
+
+// ---- конструктор блюда (создание / правка) ----
+
+function showDishDialog(dish) {
+  dishDraft = dish
+    ? { id: dish.id, name: dish.name, date: dish.date, createdAt: dish.createdAt,
+        components: (dish.components || []).map(c => ({ ...c, per100: { ...c.per100 } })) }
+    : { id: null, name: '', date: todayStr(), createdAt: null, components: [] };
+
+  showDialog(`
+    <div class="dlg-head"><h3>${dish ? 'Блюдо' : 'Новое блюдо'}</h3>
+      <button type="button" class="dlg-close" data-action="dlg-close">✕</button></div>
+    <div class="dlg-body">
+      <label>Название <input id="dishName" value="${esc(dishDraft.name)}" placeholder="например: плов"></label>
+      <label>Дата приготовления <input id="dishDate" type="date" value="${esc(dishDraft.date)}"></label>
+
+      <fieldset><legend>Состав</legend>
+        <div id="dishComponents"></div>
+        <input type="search" id="dishProductSearch" placeholder="Добавить продукт…" autocomplete="off">
+        <div id="dishPickList" class="pick-list"></div>
+      </fieldset>
+
+      <div id="dishTotals" class="dish-totals"></div>
+      <button type="button" class="btn primary" data-action="save-dish">Сохранить блюдо</button>
+      ${dish ? `<button type="button" class="btn danger" data-action="delete-dish" data-id="${dish.id}">Удалить блюдо</button>` : ''}
+    </div>`);
+
+  renderDishComponents();
+  renderDishPickList('');
+
+  const search = dlg.querySelector('#dishProductSearch');
+  search.addEventListener('input', () => renderDishPickList(search.value));
+  dlg.querySelector('#dishName').addEventListener('input', e => { dishDraft.name = e.target.value; });
+  dlg.querySelector('#dishDate').addEventListener('input', e => { dishDraft.date = e.target.value; });
+}
+
+function renderDishPickList(query) {
+  const q = query.trim().toLowerCase();
+  const list = (q ? state.products.filter(p => p.name.toLowerCase().includes(q)) : state.products).slice(0, 20);
+  const el = dlg.querySelector('#dishPickList');
+  el.innerHTML = list.length
+    ? list.map(p => `<button type="button" class="pick" data-action="dish-add-product" data-id="${p.id}">
+        ${esc(p.name)}<span class="pick-sub">${fmt(p.per100.kcal)} ккал/100 г</span></button>`).join('')
+    : '<p class="empty">Не найдено.</p>';
+}
+
+function renderDishComponents() {
+  const el = dlg.querySelector('#dishComponents');
+  if (!dishDraft.components.length) {
+    el.innerHTML = '<p class="empty">Пусто — добавь продукты ниже.</p>';
+  } else {
+    el.innerHTML = dishDraft.components.map((c, i) => `
+      <div class="dish-comp">
+        <span class="dish-comp-name">${esc(c.name)}</span>
+        <input class="dish-comp-grams" type="number" inputmode="decimal" data-dish-grams="${i}" value="${c.grams}"> г
+        <button type="button" class="dish-comp-del" data-action="dish-del-component" data-index="${i}">✕</button>
+      </div>`).join('');
+  }
+  updateDishTotals();
+}
+
+function updateDishTotals() {
+  const t = dishTotals(dishDraft.components);
+  dlg.querySelector('#dishTotals').innerHTML =
+    `Масса блюда: <b>${fmt(t.grams)} г</b> · ${fmt(t.kcal)} ккал · Б ${fmt(t.protein, 1)} · Кл ${fmt(t.fiber, 1)} · Раст ${fmt(t.plant)}`;
+}
+
+async function saveDish() {
+  dishDraft.name = dlg.querySelector('#dishName').value.trim();
+  dishDraft.date = dlg.querySelector('#dishDate').value || todayStr();
+  if (!dishDraft.name) { toast('Укажи название блюда'); return; }
+  if (!dishDraft.components.length) { toast('Добавь хотя бы один продукт'); return; }
+  const components = dishDraft.components
+    .map(c => ({ ...c, grams: num(c.grams) }))
+    .filter(c => c.grams > 0);
+  if (!components.length) { toast('Граммовки должны быть больше нуля'); return; }
+
+  const rec = {
+    id: dishDraft.id || uid(),
+    name: dishDraft.name,
+    date: dishDraft.date,
+    components,
+    totalGrams: dishTotals(components).grams,
+    createdAt: dishDraft.createdAt || Date.now(),
+  };
+  await db.put('dishes', rec);
+  dlg.close();
+  await refreshDishes();
+  render();
+  toast('Блюдо сохранено');
+}
+
+// ---- добавление блюда в дневник по проценту ----
+
+function showDishDetail(dish) {
+  const t = dishTotals(dish.components || []);
+  const comps = (dish.components || []).map(c => {
+    const n = dishTotals([c]);
+    return `<div class="entry-sub dish-detail-row">${esc(c.name)} — ${fmt(c.grams)} г · ${fmt(n.kcal)} ккал</div>`;
+  }).join('');
+
+  showDialog(`
+    <div class="dlg-head"><h3>${esc(dishFullName(dish))}</h3>
+      <button type="button" class="dlg-close" data-action="dlg-close">✕</button></div>
+    <div class="dlg-body">
+      <div class="dish-totals">Масса блюда: <b>${fmt(t.grams)} г</b> · ${fmt(t.kcal)} ккал · Б ${fmt(t.protein, 1)} · Кл ${fmt(t.fiber, 1)}</div>
+      <div class="dish-detail-list">${comps}</div>
+
+      <label>Съедено, % от блюда
+        <input id="dishPercent" type="number" inputmode="decimal" min="0" max="100" value="100">
+      </label>
+      <p class="note" id="dishPortionPreview"></p>
+      <button type="button" class="btn primary" data-action="add-dish-to-diary" data-id="${dish.id}">Записать в дневник за ${esc(state.date === todayStr() ? 'сегодня' : state.date)}</button>
+
+      <button type="button" class="btn" data-action="edit-dish" data-id="${dish.id}">Редактировать состав</button>
+      <button type="button" class="btn danger" data-action="delete-dish" data-id="${dish.id}">Удалить блюдо</button>
+    </div>`);
+
+  const percentInput = dlg.querySelector('#dishPercent');
+  const preview = dlg.querySelector('#dishPortionPreview');
+  const update = () => {
+    const p = Math.max(0, num(percentInput.value)) / 100;
+    preview.textContent = `≈ ${fmt(t.grams * p, 1)} г · ${fmt(t.kcal * p)} ккал · Б ${fmt(t.protein * p, 1)} · Кл ${fmt(t.fiber * p, 1)} · Раст ${fmt(t.plant * p)}`;
+  };
+  percentInput.addEventListener('input', update);
+  update();
+}
+
+async function addDishToDiary(dish, percent) {
+  const frac = Math.max(0, num(percent)) / 100;
+  if (frac <= 0) { toast('Укажи процент больше нуля'); return; }
+  const fullName = dishFullName(dish);
+  let count = 0;
+  for (const c of dish.components || []) {
+    const grams = num(c.grams) * frac;
+    if (grams <= 0) continue;
+    await db.put('entries', {
+      id: uid(), date: state.date, ts: Date.now() + count,
+      productId: c.productId || null, name: c.name, grams,
+      per100: { ...c.per100 }, plantPercent: c.plantPercent || 0,
+      source: 'dish', fromDish: fullName,
+    });
+    count++;
+  }
+  dlg.close();
+  await refreshEntries();
+  render();
+  toast(`Добавлено из блюда: ${count} ${count === 1 ? 'позиция' : 'позиц.'}`);
 }
 
 async function renderStats() {
@@ -612,6 +814,7 @@ async function exportJSON() {
     exportedAt: new Date().toISOString(),
     products: await db.getAll('products'),
     entries: await db.getAll('entries'),
+    dishes: await db.getAll('dishes'),
     settings: (await db.getAll('settings')).filter(s => s.key !== 'seeded'),
   };
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -632,12 +835,14 @@ async function importJSON(ev) {
     }
     for (const p of data.products) await db.put('products', p);
     for (const e of data.entries) await db.put('entries', e);
+    for (const d of data.dishes || []) await db.put('dishes', d);
     for (const s of data.settings || []) await db.put('settings', s);
     await loadTargets();
     await refreshProducts();
     await refreshEntries();
+    await refreshDishes();
     render();
-    toast(`Импортировано: ${data.products.length} продуктов, ${data.entries.length} записей`);
+    toast(`Импортировано: ${data.products.length} продуктов, ${data.entries.length} записей, ${(data.dishes || []).length} блюд`);
   } catch (err) {
     toast('Ошибка импорта: ' + err.message);
   }
@@ -648,11 +853,13 @@ async function wipeAll() {
   if (!confirm('Точно удалить ВСЕ данные? Это необратимо. Сначала сделай экспорт.')) return;
   await db.clearStore('entries');
   await db.clearStore('products');
+  await db.clearStore('dishes');
   await db.clearStore('settings');
   state.targets = { ...DEFAULT_TARGETS };
   await ensureSeed();
   await refreshProducts();
   await refreshEntries();
+  await refreshDishes();
   render();
   toast('Данные удалены, база продуктов сброшена к начальной');
 }
@@ -724,6 +931,40 @@ document.body.addEventListener('click', async ev => {
     dlg.querySelector('#pickedId').value = id;
     dlg.querySelector('#dlgProductList').innerHTML =
       productListHTML(dlg.querySelector('#dlgSearch').value, id);
+  } else if (action === 'add-dish') {
+    showDishDialog(null);
+  } else if (action === 'open-dish') {
+    const d = state.dishes.find(x => x.id === id);
+    if (d) showDishDetail(d);
+  } else if (action === 'edit-dish') {
+    const d = state.dishes.find(x => x.id === id);
+    if (d) showDishDialog(d);
+  } else if (action === 'dish-add-product') {
+    const p = state.products.find(x => x.id === id);
+    if (p) {
+      dishDraft.components.push({
+        productId: p.id, name: p.name, grams: 100,
+        per100: { ...p.per100 }, plantPercent: p.plantPercent || 0,
+      });
+      renderDishComponents();
+      const s = dlg.querySelector('#dishProductSearch');
+      s.value = '';
+      renderDishPickList('');
+    }
+  } else if (action === 'dish-del-component') {
+    dishDraft.components.splice(Number(el.dataset.index), 1);
+    renderDishComponents();
+  } else if (action === 'save-dish') {
+    await saveDish();
+  } else if (action === 'delete-dish') {
+    if (!confirm('Удалить блюдо? Записи в дневнике, уже сделанные из него, сохранятся.')) return;
+    await db.del('dishes', id);
+    dlg.close();
+    await refreshDishes();
+    render();
+  } else if (action === 'add-dish-to-diary') {
+    const d = state.dishes.find(x => x.id === id);
+    if (d) await addDishToDiary(d, dlg.querySelector('#dishPercent').value);
   } else if (action === 'entry-mode') {
     const mode = el.dataset.mode;
     dlg.querySelectorAll('[data-action="entry-mode"]').forEach(b =>
@@ -762,6 +1003,18 @@ dlg.addEventListener('click', ev => {
   if (ev.target === dlg) dlg.close();
 });
 
+// правка граммовок в составе блюда — без перерисовки строки, чтобы не терять
+// фокус; обновляем только черновик и итоги
+dlg.addEventListener('input', ev => {
+  const gi = ev.target.closest('[data-dish-grams]');
+  if (!gi || !dishDraft) return;
+  const i = Number(gi.dataset.dishGrams);
+  if (dishDraft.components[i]) {
+    dishDraft.components[i].grams = gi.value;
+    updateDishTotals();
+  }
+});
+
 // ---------- старт ----------
 
 (async function init() {
@@ -769,5 +1022,6 @@ dlg.addEventListener('click', ev => {
   await loadTargets();
   await refreshProducts();
   await refreshEntries();
+  await refreshDishes();
   render();
 })();

@@ -334,6 +334,41 @@ select {
 .plate-row input { width: 76px; padding: 6px 8px; }
 .plate-sub { flex: 1; }
 
+/* ---- блюда ---- */
+.dish-comp {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.dish-comp-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* повышенная специфичность, чтобы перебить input[type="number"]{width:100%} */
+.dish-comp .dish-comp-grams { flex: 0 0 78px; width: 78px; padding: 6px 8px; }
+.dish-comp-del {
+  border: none;
+  background: none;
+  color: var(--danger);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 6px;
+}
+.dish-totals {
+  font-size: 14px;
+  color: var(--muted);
+  padding: 8px 0;
+}
+.dish-totals b { color: var(--text); }
+.dish-detail-list {
+  max-height: 30dvh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px 10px;
+}
+.dish-detail-row { padding: 3px 0; }
+
 /* ---- тост ---- */
 #toast {
   position: fixed;
