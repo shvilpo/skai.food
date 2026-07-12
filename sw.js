@@ -1,4 +1,4 @@
-const VERSION = 'skai-food-v3';
+const VERSION = 'skai-food-v4';
 const SHELL = [
   './',
   './index.html',
@@ -7,6 +7,7 @@ const SHELL = [
   './js/app.js',
   './js/ai.js',
   './js/db.js',
+  './js/foods.js',
   './js/seed.js',
   './js/util.js',
   './icons/icon-180.png',
