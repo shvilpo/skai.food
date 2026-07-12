@@ -152,6 +152,10 @@ function extractJson(text) {
 }
 
 async function callAnthropic(prompt, schema, imageB64, apiKey) {
+  const content = [];
+  if (imageB64) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageB64 } });
+  content.push({ type: 'text', text: prompt });
+
   let resp;
   try {
     resp = await fetch(ANTHROPIC_URL, {
@@ -166,13 +170,7 @@ async function callAnthropic(prompt, schema, imageB64, apiKey) {
         model: getModel('anthropic'),
         max_tokens: 2048,
         output_config: { format: { type: 'json_schema', schema } },
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageB64 } },
-            { type: 'text', text: prompt },
-          ],
-        }],
+        messages: [{ role: 'user', content }],
       }),
     });
   } catch {
@@ -191,16 +189,14 @@ async function callAnthropic(prompt, schema, imageB64, apiKey) {
 }
 
 async function callOpenRouter(prompt, schema, imageB64, apiKey, withFormat = true) {
+  const content = [];
+  if (imageB64) content.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageB64}` } });
+  content.push({ type: 'text', text: `${prompt}\n\nОтветь строго одним JSON-объектом по заданной схеме, без пояснений и без markdown.` });
+
   const body = {
     model: getModel('openrouter'),
     max_tokens: 2048,
-    messages: [{
-      role: 'user',
-      content: [
-        { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageB64}` } },
-        { type: 'text', text: `${prompt}\n\nОтветь строго одним JSON-объектом по заданной схеме, без пояснений и без markdown.` },
-      ],
-    }],
+    messages: [{ role: 'user', content }],
   };
   if (withFormat) {
     body.response_format = {
@@ -276,4 +272,28 @@ export async function recognizePlate(file, comment) {
     ? `${PLATE_PROMPT}\n\nУточнение от пользователя (доверяй ему больше, чем своей оценке): ${comment.trim()}`
     : PLATE_PROMPT;
   return callVision(prompt, PLATE_SCHEMA, imageB64);
+}
+
+// Догрузка продукта по названию (без фото) — когда его нет в базе.
+const FOOD_SCHEMA = {
+  type: 'object',
+  properties: {
+    name: { type: 'string', description: 'Уточнённое название продукта на русском' },
+    per100: PER100_SCHEMA,
+    plantPercent: { type: 'integer', description: 'Доля растительного сырья по массе, 0–100' },
+    ok: { type: 'boolean', description: 'false, если такого продукта не существует' },
+    notes: { type: 'string', description: 'Краткое замечание (или пустая строка)' },
+  },
+  required: ['name', 'per100', 'plantPercent', 'ok', 'notes'],
+  additionalProperties: false,
+};
+
+export async function lookupFood(query) {
+  const prompt = `Дай пищевую ценность СЫРОГО, неприготовленного продукта «${query.trim()}» на 100 г съедобной части: ккал, белок, клетчатка (пищевые волокна).
+Правила:
+- Значения — для сырого/исходного вида (не варёного, не жареного, не тушёного). Если продукт обычно едят приготовленным, всё равно дай значения для сырья.
+- plantPercent — доля растительного сырья по массе: мясо, рыба, яйца, молочное = 0; овощи, крупы, фрукты, бобовые, орехи = 100; смешанные — оцени по составу.
+- Опирайся на таблицы химического состава (Скурихин) и USDA.
+- Если такого продукта не существует, поставь ok=false и объясни в notes.`;
+  return callVision(prompt, FOOD_SCHEMA, null);
 }

@@ -109,41 +109,39 @@ function renderDiary() {
     <button class="fab" data-action="add-entry">+ Добавить</button>`;
 }
 
-function renderProducts() {
-  const q = state.productQuery.trim().toLowerCase();
-  const list = q
-    ? state.products.filter(p => p.name.toLowerCase().includes(q))
-    : state.products;
-  const rows = list.map(p => `
-    <button class="entry" data-action="edit-product" data-id="${p.id}">
-      <div class="entry-main">
-        <span class="entry-name">${esc(p.name)}</span>
-        ${p.plantPercent ? '<span class="leaf">🌿</span>' : ''}
-      </div>
-      <div class="entry-sub">на 100 г: ${fmt(p.per100.kcal)} ккал · Б ${fmt(p.per100.protein, 1)} · Кл ${fmt(p.per100.fiber, 1)}</div>
-    </button>`).join('');
-
-  view.innerHTML = `
-    <div class="searchbar">
-      <input type="search" id="productSearch" placeholder="Поиск по базе…" value="${esc(state.productQuery)}">
-    </div>
-    <div class="entries">${rows || '<p class="empty">Ничего не найдено.</p>'}</div>
-    <button class="fab" data-action="add-product">+ Продукт</button>`;
-
-  const input = document.getElementById('productSearch');
-  input.addEventListener('input', () => {
-    state.productQuery = input.value;
-    // перерисовываем только список, чтобы не терять фокус
-    const q2 = input.value.trim().toLowerCase();
-    const list2 = q2 ? state.products.filter(p => p.name.toLowerCase().includes(q2)) : state.products;
-    view.querySelector('.entries').innerHTML = list2.map(p => `
+function productListInner(query) {
+  const q = query.trim().toLowerCase();
+  const list = q ? state.products.filter(p => p.name.toLowerCase().includes(q)) : state.products;
+  if (list.length) {
+    return list.map(p => `
       <button class="entry" data-action="edit-product" data-id="${p.id}">
         <div class="entry-main">
           <span class="entry-name">${esc(p.name)}</span>
           ${p.plantPercent ? '<span class="leaf">🌿</span>' : ''}
         </div>
         <div class="entry-sub">на 100 г: ${fmt(p.per100.kcal)} ккал · Б ${fmt(p.per100.protein, 1)} · Кл ${fmt(p.per100.fiber, 1)}</div>
-      </button>`).join('') || '<p class="empty">Ничего не найдено.</p>';
+      </button>`).join('');
+  }
+  const trimmed = query.trim();
+  if (!trimmed) return '<p class="empty">База пуста.</p>';
+  // ничего не нашлось — предлагаем догрузить через ИИ
+  return `<p class="empty">В базе нет «${esc(trimmed)}».</p>
+    <button class="btn" data-action="lookup-product" data-query="${esc(trimmed)}">🔎 Найти через ИИ и добавить</button>`;
+}
+
+function renderProducts() {
+  view.innerHTML = `
+    <div class="searchbar">
+      <input type="search" id="productSearch" placeholder="Поиск по базе…" value="${esc(state.productQuery)}">
+    </div>
+    <div class="entries">${productListInner(state.productQuery)}</div>
+    <button class="fab" data-action="add-product">+ Продукт</button>`;
+
+  const input = document.getElementById('productSearch');
+  input.addEventListener('input', () => {
+    state.productQuery = input.value;
+    // перерисовываем только список, чтобы не терять фокус
+    view.querySelector('.entries').innerHTML = productListInner(input.value);
   });
 }
 
@@ -278,7 +276,12 @@ function showDialog(html) {
 function productListHTML(query, selectedId) {
   const q = query.trim().toLowerCase();
   const list = (q ? state.products.filter(p => p.name.toLowerCase().includes(q)) : state.products).slice(0, 30);
-  if (!list.length) return '<p class="empty">Не найдено — добавь вручную на вкладке «Вручную».</p>';
+  if (!list.length) {
+    const trimmed = query.trim();
+    if (!trimmed) return '<p class="empty">База пуста.</p>';
+    return `<p class="empty">Не найдено.</p>
+      <button type="button" class="btn" data-action="lookup-into-manual" data-query="${esc(trimmed)}">🔎 Найти «${esc(trimmed)}» через ИИ</button>`;
+  }
   return list.map(p => `
     <button type="button" class="pick${p.id === selectedId ? ' selected' : ''}" data-action="pick-product" data-id="${p.id}">
       ${esc(p.name)}<span class="pick-sub">${fmt(p.per100.kcal)} ккал/100 г</span>
@@ -427,8 +430,10 @@ function showEditEntryDialog(entry) {
   });
 }
 
-function showProductDialog(product) {
-  const p = product || { name: '', per100: { kcal: '', protein: 0, fiber: 0 }, plantPercent: 0 };
+// product — существующий продукт для правки; prefill — заготовка для нового
+// (например, из ИИ-догрузки): показываем значения, но сохраняем как новый.
+function showProductDialog(product, prefill) {
+  const p = product || prefill || { name: '', per100: { kcal: '', protein: 0, fiber: 0 }, plantPercent: 0 };
   showDialog(`
     <div class="dlg-head"><h3>${product ? 'Продукт' : 'Новый продукт'}</h3>
       <button type="button" class="dlg-close" data-action="dlg-close">✕</button></div>
@@ -453,6 +458,9 @@ function showProductDialog(product) {
       per100: { kcal: num(f.get('kcal')), protein: num(f.get('protein')), fiber: num(f.get('fiber')) },
       plantPercent: Math.max(0, Math.min(100, num(f.get('plantPercent')))),
       source: product ? product.source : 'manual',
+      // помечаем как отредактированный, чтобы правки пережили обновление
+      // справочника (см. ensureSeed) и не были затёрты/удалены
+      edited: true,
       usedCount: product ? (product.usedCount || 0) : 0,
       createdAt: product ? product.createdAt : Date.now(),
     };
@@ -491,9 +499,46 @@ async function runRecognition() {
   }
 }
 
-// Этикетка: переключаем диалог на «Вручную» с заполненными полями —
-// пользователь проверяет цифры и жмёт «Записать».
-function fillManualFromLabel(p) {
+// ---------- догрузка продукта через ИИ (без фото) ----------
+
+// Из вкладки «Продукты»: находим и открываем карточку нового продукта
+// с заполненными значениями — пользователь правит и сохраняет локально.
+async function lookupProduct(query, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Ищу…'; }
+  try {
+    const data = await ai.lookupFood(query);
+    showProductDialog(null, {
+      name: data.name || query,
+      per100: {
+        kcal: data.per100?.kcal ?? '',
+        protein: data.per100?.protein ?? 0,
+        fiber: data.per100?.fiber ?? 0,
+      },
+      plantPercent: Math.max(0, Math.min(100, Math.round(data.plantPercent || 0))),
+    });
+    if (data.notes) toast(data.notes);
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = '🔎 Найти через ИИ и добавить'; }
+    toast('Не нашлось: ' + err.message);
+  }
+}
+
+// Из пикера диалога добавления: заполняем форму «Вручную» (с галочкой
+// «сохранить в базу» — так исправленная версия остаётся в базе).
+async function lookupIntoManual(query, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Ищу…'; }
+  try {
+    const data = await ai.lookupFood(query);
+    fillManualFromData({ name: data.name || query, per100: data.per100, plantPercent: data.plantPercent });
+    toast('Проверь данные и запиши' + (data.notes ? '. ' + data.notes : ''));
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = `🔎 Найти «${query}» через ИИ`; }
+    toast('Не нашлось: ' + err.message);
+  }
+}
+
+// Заполняет форму «Вручную» и переключает на неё сегмент диалога.
+function fillManualFromData(p) {
   const form = dlg.querySelector('#entryManualForm');
   form.elements.name.value = p.name || '';
   form.elements.kcal.value = p.per100?.kcal ?? '';
@@ -501,6 +546,12 @@ function fillManualFromLabel(p) {
   form.elements.fiber.value = p.per100?.fiber ?? 0;
   form.elements.plantPercent.value = Math.max(0, Math.min(100, Math.round(p.plantPercent || 0)));
   dlg.querySelector('[data-action="entry-mode"][data-mode="manual"]').click();
+}
+
+// Этикетка: переключаем диалог на «Вручную» с заполненными полями —
+// пользователь проверяет цифры и жмёт «Записать».
+function fillManualFromLabel(p) {
+  fillManualFromData(p);
   const hints = [];
   if (p.fiberSource === 'estimate') hints.push('клетчатка оценена по категории (на этикетке не указана)');
   if (p.notes) hints.push(p.notes);
@@ -656,6 +707,10 @@ document.body.addEventListener('click', async ev => {
     render();
   } else if (action === 'add-product') {
     showProductDialog(null);
+  } else if (action === 'lookup-product') {
+    await lookupProduct(el.dataset.query, el);
+  } else if (action === 'lookup-into-manual') {
+    await lookupIntoManual(el.dataset.query, el);
   } else if (action === 'edit-product') {
     const p = state.products.find(x => x.id === id);
     if (p) showProductDialog(p);
