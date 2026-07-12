@@ -1,10 +1,11 @@
-const VERSION = 'skai-food-v1';
+const VERSION = 'skai-food-v2';
 const SHELL = [
   './',
   './index.html',
   './manifest.webmanifest',
   './css/app.css',
   './js/app.js',
+  './js/ai.js',
   './js/db.js',
   './js/seed.js',
   './js/util.js',

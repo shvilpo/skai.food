@@ -1,6 +1,7 @@
 import { uid, todayStr, addDays, fmtHeaderDate, fmtShortDate, fmt, esc, num } from './util.js';
 import * as db from './db.js';
 import { ensureSeed } from './seed.js';
+import * as ai from './ai.js';
 
 const DEFAULT_TARGETS = { kcal: 2000, protein: 100, fiber: 30, plant: 400 };
 
@@ -15,6 +16,10 @@ const state = {
 
 const view = document.getElementById('view');
 const dlg = document.getElementById('dlg');
+
+// состояние режима «Фото» в диалоге добавления
+let photoState = { file: null, plateItems: null };
+let photoType = 'label';
 
 // ---------- данные ----------
 
@@ -195,11 +200,16 @@ function renderSettings() {
 
     <h2 class="section-title">Claude API</h2>
     <div class="card form-grid">
-      <label>API-ключ (для распознавания, шаг 2)
+      <label>API-ключ (для распознавания по фото)
         <input id="apiKey" type="password" autocomplete="off" placeholder="sk-ant-…" value="${esc(localStorage.getItem('apiKey') || '')}">
       </label>
       <button class="btn" data-action="save-key">Сохранить ключ</button>
-      <p class="note">Ключ хранится только на этом устройстве и не попадает в экспорт.</p>
+      <label>Модель распознавания
+        <select id="aiModel">
+          ${ai.MODELS.map(m => `<option value="${m.id}" ${ai.getModel() === m.id ? 'selected' : ''}>${esc(m.label)}</option>`).join('')}
+        </select>
+      </label>
+      <p class="note">Ключ хранится только на этом устройстве и не попадает в экспорт. Для распознавания нужен VPN: api.anthropic.com недоступен с российских IP. Всё остальное работает без VPN.</p>
     </div>
 
     <h2 class="section-title">Данные</h2>
@@ -223,6 +233,11 @@ function renderSettings() {
   });
 
   document.getElementById('importFile').addEventListener('change', importJSON);
+
+  document.getElementById('aiModel').addEventListener('change', ev => {
+    localStorage.setItem('aiModel', ev.target.value);
+    toast('Модель сохранена');
+  });
 }
 
 // ---------- диалоги ----------
@@ -243,11 +258,14 @@ function productListHTML(query, selectedId) {
 }
 
 function showEntryDialog() {
+  photoState = { file: null, plateItems: null };
+  photoType = 'label';
   showDialog(`
     <div class="dlg-head">
       <div class="seg">
         <button type="button" class="seg-btn active" data-action="entry-mode" data-mode="base">Из базы</button>
         <button type="button" class="seg-btn" data-action="entry-mode" data-mode="manual">Вручную</button>
+        <button type="button" class="seg-btn" data-action="entry-mode" data-mode="photo">📷 Фото</button>
       </div>
       <button type="button" class="dlg-close" data-action="dlg-close">✕</button>
     </div>
@@ -271,7 +289,38 @@ function showEntryDialog() {
       </fieldset>
       <label class="check"><input type="checkbox" name="saveToBase" checked> сохранить в базу продуктов</label>
       <button type="submit" class="btn primary">Записать</button>
-    </form>`);
+    </form>
+
+    <div id="entryPhotoForm" class="dlg-body" hidden>
+      <div class="seg">
+        <button type="button" class="seg-btn active" data-action="photo-type" data-ptype="label">Этикетка</button>
+        <button type="button" class="seg-btn" data-action="photo-type" data-ptype="plate">Тарелка</button>
+      </div>
+      <p class="note" id="photoHint">Сфотографируй таблицу пищевой ценности — заполню карточку продукта.</p>
+      <label class="btn file-btn">📷 Снять или выбрать фото<input id="photoInput" type="file" accept="image/*" hidden></label>
+      <div id="photoPreview" class="photo-preview"></div>
+      <label id="photoCommentWrap" hidden>Уточнение (необязательно)
+        <input id="photoComment" placeholder="например: гречки примерно 200 г">
+      </label>
+      <button type="button" class="btn primary" data-action="recognize" id="recognizeBtn" disabled>Распознать</button>
+      <div id="photoResult"></div>
+    </div>`);
+
+  const photoInput = dlg.querySelector('#photoInput');
+  photoInput.addEventListener('change', () => {
+    photoState.file = photoInput.files[0] || null;
+    photoState.plateItems = null;
+    dlg.querySelector('#photoResult').innerHTML = '';
+    dlg.querySelector('#recognizeBtn').disabled = !photoState.file;
+    const preview = dlg.querySelector('#photoPreview');
+    preview.innerHTML = '';
+    if (photoState.file) {
+      const img = document.createElement('img');
+      img.src = URL.createObjectURL(photoState.file);
+      img.onload = () => URL.revokeObjectURL(img.src);
+      preview.appendChild(img);
+    }
+  });
 
   const search = dlg.querySelector('#dlgSearch');
   search.addEventListener('input', () => {
@@ -385,6 +434,94 @@ function showProductDialog(product) {
     await refreshProducts();
     render();
   });
+}
+
+// ---------- распознавание по фото ----------
+
+async function runRecognition() {
+  if (!photoState.file) return;
+  const btn = dlg.querySelector('#recognizeBtn');
+  const result = dlg.querySelector('#photoResult');
+  btn.disabled = true;
+  btn.textContent = 'Распознаю…';
+  result.innerHTML = '';
+  try {
+    if (photoType === 'label') {
+      const p = await ai.recognizeLabel(photoState.file);
+      fillManualFromLabel(p);
+    } else {
+      const comment = dlg.querySelector('#photoComment').value;
+      const data = await ai.recognizePlate(photoState.file, comment);
+      photoState.plateItems = data.items || [];
+      renderPlateResult(data);
+    }
+  } catch (err) {
+    result.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+  } finally {
+    btn.disabled = !photoState.file;
+    btn.textContent = 'Распознать';
+  }
+}
+
+// Этикетка: переключаем диалог на «Вручную» с заполненными полями —
+// пользователь проверяет цифры и жмёт «Записать».
+function fillManualFromLabel(p) {
+  const form = dlg.querySelector('#entryManualForm');
+  form.elements.name.value = p.name || '';
+  form.elements.kcal.value = p.per100?.kcal ?? '';
+  form.elements.protein.value = p.per100?.protein ?? 0;
+  form.elements.fiber.value = p.per100?.fiber ?? 0;
+  form.elements.plantPercent.value = Math.max(0, Math.min(100, Math.round(p.plantPercent || 0)));
+  dlg.querySelector('[data-action="entry-mode"][data-mode="manual"]').click();
+  const hints = [];
+  if (p.fiberSource === 'estimate') hints.push('клетчатка оценена по категории (на этикетке не указана)');
+  if (p.notes) hints.push(p.notes);
+  toast('Проверь данные и запиши' + (hints.length ? '. ' + hints.join('; ') : ''));
+}
+
+function renderPlateResult(data) {
+  const rows = photoState.plateItems.map((it, i) => `
+    <div class="plate-item">
+      <label class="check plate-check">
+        <input type="checkbox" data-plate-check="${i}" checked>
+        <span class="plate-name">${esc(it.name)}</span>
+      </label>
+      <div class="plate-row">
+        <input type="number" inputmode="decimal" data-plate-grams="${i}" value="${Math.round(it.grams)}"> г
+        <span class="plate-sub">${fmt(it.per100.kcal)} ккал/100 г · Б ${fmt(it.per100.protein, 1)} · Кл ${fmt(it.per100.fiber, 1)} · раст ${fmt(it.plantPercent)}%</span>
+      </div>
+    </div>`).join('');
+  dlg.querySelector('#photoResult').innerHTML = `
+    ${data.notes ? `<p class="note">${esc(data.notes)}</p>` : ''}
+    <div class="plate-list">${rows || '<p class="empty">Компоненты не распознаны.</p>'}</div>
+    ${photoState.plateItems.length ? '<button type="button" class="btn primary" data-action="save-plate">Записать выбранное</button>' : ''}`;
+}
+
+async function savePlateItems() {
+  if (!photoState.plateItems) return;
+  let saved = 0;
+  for (let i = 0; i < photoState.plateItems.length; i++) {
+    const it = photoState.plateItems[i];
+    if (!dlg.querySelector(`[data-plate-check="${i}"]`)?.checked) continue;
+    const grams = num(dlg.querySelector(`[data-plate-grams="${i}"]`)?.value, it.grams);
+    if (grams <= 0) continue;
+    await db.put('entries', {
+      id: uid(), date: state.date, ts: Date.now(),
+      productId: null, name: it.name, grams,
+      per100: {
+        kcal: num(it.per100.kcal),
+        protein: num(it.per100.protein),
+        fiber: num(it.per100.fiber),
+      },
+      plantPercent: Math.max(0, Math.min(100, num(it.plantPercent))),
+      source: 'photo',
+    });
+    saved++;
+  }
+  dlg.close();
+  await refreshEntries();
+  render();
+  toast(saved ? `Записано компонентов: ${saved}` : 'Ничего не выбрано');
 }
 
 // ---------- экспорт / импорт ----------
@@ -506,9 +643,25 @@ document.body.addEventListener('click', async ev => {
       productListHTML(dlg.querySelector('#dlgSearch').value, id);
   } else if (action === 'entry-mode') {
     const mode = el.dataset.mode;
-    dlg.querySelectorAll('.seg-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+    dlg.querySelectorAll('[data-action="entry-mode"]').forEach(b =>
+      b.classList.toggle('active', b.dataset.mode === mode));
     dlg.querySelector('#entryBaseForm').hidden = mode !== 'base';
     dlg.querySelector('#entryManualForm').hidden = mode !== 'manual';
+    dlg.querySelector('#entryPhotoForm').hidden = mode !== 'photo';
+  } else if (action === 'photo-type') {
+    photoType = el.dataset.ptype;
+    dlg.querySelectorAll('[data-action="photo-type"]').forEach(b =>
+      b.classList.toggle('active', b.dataset.ptype === photoType));
+    dlg.querySelector('#photoHint').textContent = photoType === 'label'
+      ? 'Сфотографируй таблицу пищевой ценности — заполню карточку продукта.'
+      : 'Сфотографируй тарелку — оценю состав и граммовки.';
+    dlg.querySelector('#photoCommentWrap').hidden = photoType !== 'plate';
+    dlg.querySelector('#photoResult').innerHTML = '';
+    photoState.plateItems = null;
+  } else if (action === 'recognize') {
+    await runRecognition();
+  } else if (action === 'save-plate') {
+    await savePlateItems();
   } else if (action === 'dlg-close') {
     dlg.close();
   } else if (action === 'save-key') {
