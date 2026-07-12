@@ -1,4 +1,4 @@
-const VERSION = 'skai-food-v2';
+const VERSION = 'skai-food-v3';
 const SHELL = [
   './',
   './index.html',
@@ -35,7 +35,9 @@ self.addEventListener('fetch', ev => {
   ev.respondWith(
     caches.open(VERSION).then(async cache => {
       const cached = await cache.match(ev.request);
-      const refresh = fetch(ev.request)
+      // cache: 'no-cache' — ревалидируем у сервера, минуя HTTP-кэш браузера,
+      // иначе фоновое обновление может перечитать устаревшую копию файла.
+      const refresh = fetch(ev.request, { cache: 'no-cache' })
         .then(resp => {
           if (resp.ok) cache.put(ev.request, resp.clone());
           return resp;

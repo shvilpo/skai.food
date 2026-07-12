@@ -198,18 +198,36 @@ function renderSettings() {
       <button type="submit" class="btn primary">Сохранить цели</button>
     </form>
 
-    <h2 class="section-title">Claude API</h2>
+    <h2 class="section-title">Распознавание по фото</h2>
     <div class="card form-grid">
-      <label>API-ключ (для распознавания по фото)
-        <input id="apiKey" type="password" autocomplete="off" placeholder="sk-ant-…" value="${esc(localStorage.getItem('apiKey') || '')}">
-      </label>
-      <button class="btn" data-action="save-key">Сохранить ключ</button>
-      <label>Модель распознавания
-        <select id="aiModel">
-          ${ai.MODELS.map(m => `<option value="${m.id}" ${ai.getModel() === m.id ? 'selected' : ''}>${esc(m.label)}</option>`).join('')}
+      <label>Провайдер
+        <select id="aiProvider">
+          ${ai.PROVIDERS.map(p => `<option value="${p.id}" ${ai.getProvider() === p.id ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}
         </select>
       </label>
-      <p class="note">Ключ хранится только на этом устройстве и не попадает в экспорт. Для распознавания нужен VPN: api.anthropic.com недоступен с российских IP. Всё остальное работает без VPN.</p>
+      <label>API-ключ ${ai.getProvider() === 'openrouter' ? 'OpenRouter' : 'Anthropic'}
+        <input id="apiKey" type="password" autocomplete="off"
+          placeholder="${esc(ai.PROVIDERS.find(p => p.id === ai.getProvider()).keyPlaceholder)}"
+          value="${esc(ai.getApiKey())}">
+      </label>
+      <button class="btn" data-action="save-key">Сохранить ключ</button>
+      ${ai.getProvider() === 'openrouter' ? `
+      <label>Модель (любая vision-модель из каталога openrouter.ai/models)
+        <input id="openrouterModel" list="orModels" autocapitalize="off" autocomplete="off" spellcheck="false"
+          value="${esc(ai.getModel('openrouter'))}">
+        <datalist id="orModels">
+          ${ai.OPENROUTER_SUGGESTIONS.map(id => `<option value="${esc(id)}">`).join('')}
+        </datalist>
+      </label>` : `
+      <label>Модель распознавания
+        <select id="aiModel">
+          ${ai.ANTHROPIC_MODELS.map(m => `<option value="${m.id}" ${ai.getModel('anthropic') === m.id ? 'selected' : ''}>${esc(m.label)}</option>`).join('')}
+        </select>
+      </label>`}
+      <p class="note">${ai.getProvider() === 'openrouter'
+        ? 'OpenRouter работает из России без VPN. Ключ — на openrouter.ai → Keys. Модели с суффиксом :free бесплатны (лимит ~50 запросов в день; после разового пополнения от $10 — 1000/день).'
+        : 'Для распознавания через Anthropic нужен VPN: api.anthropic.com недоступен с российских IP. Всё остальное приложение работает без VPN.'}
+      Ключи хранятся только на этом устройстве и не попадают в экспорт.</p>
     </div>
 
     <h2 class="section-title">Данные</h2>
@@ -234,8 +252,18 @@ function renderSettings() {
 
   document.getElementById('importFile').addEventListener('change', importJSON);
 
-  document.getElementById('aiModel').addEventListener('change', ev => {
+  document.getElementById('aiProvider').addEventListener('change', ev => {
+    localStorage.setItem('aiProvider', ev.target.value);
+    renderSettings(); // перерисовываем: поля ключа и модели у провайдеров разные
+    toast('Провайдер сохранён');
+  });
+  document.getElementById('aiModel')?.addEventListener('change', ev => {
     localStorage.setItem('aiModel', ev.target.value);
+    toast('Модель сохранена');
+  });
+  document.getElementById('openrouterModel')?.addEventListener('change', ev => {
+    const value = ev.target.value.trim();
+    if (value) localStorage.setItem('openrouterModel', value);
     toast('Модель сохранена');
   });
 }
@@ -665,7 +693,7 @@ document.body.addEventListener('click', async ev => {
   } else if (action === 'dlg-close') {
     dlg.close();
   } else if (action === 'save-key') {
-    localStorage.setItem('apiKey', document.getElementById('apiKey').value.trim());
+    ai.setApiKey(document.getElementById('apiKey').value);
     toast('Ключ сохранён на устройстве');
   } else if (action === 'export') {
     exportJSON();

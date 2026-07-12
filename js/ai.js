@@ -1,23 +1,58 @@
-// Распознавание через Claude API напрямую из браузера.
-// Ключ хранится в localStorage, вызовы идут с заголовком
-// anthropic-dangerous-direct-browser-access (официальный CORS-режим API).
-// С российских IP api.anthropic.com недоступен — нужен VPN.
+// Распознавание по фото через vision-LLM. Два провайдера:
+//  - anthropic:  прямые вызовы api.anthropic.com (официальный CORS-режим,
+//                заголовок anthropic-dangerous-direct-browser-access);
+//                с российских IP нужен VPN.
+//  - openrouter: openrouter.ai — OpenAI-совместимый API, работает из РФ
+//                без VPN, даёт доступ к тем же и другим моделям.
+// Ключи хранятся в localStorage, по одному на провайдера.
 
-const API_URL = 'https://api.anthropic.com/v1/messages';
-export const DEFAULT_MODEL = 'claude-opus-4-8';
+const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
+const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
-export const MODELS = [
+export const PROVIDERS = [
+  { id: 'anthropic', label: 'Anthropic напрямую (нужен VPN)', keyPlaceholder: 'sk-ant-…' },
+  { id: 'openrouter', label: 'OpenRouter (работает без VPN)', keyPlaceholder: 'sk-or-…' },
+];
+
+export const ANTHROPIC_MODELS = [
   { id: 'claude-opus-4-8', label: 'Opus 4.8 — точнее, дороже' },
   { id: 'claude-sonnet-5', label: 'Sonnet 5 — баланс' },
   { id: 'claude-haiku-4-5', label: 'Haiku 4.5 — быстрее и дешевле' },
 ];
+export const DEFAULT_ANTHROPIC_MODEL = 'claude-opus-4-8';
 
-export function getApiKey() {
-  return (localStorage.getItem('apiKey') || '').trim();
+// ID проверены по каталогу openrouter.ai/api/v1/models (июль 2026),
+// поле свободное — можно вписать любую vision-модель из каталога.
+export const OPENROUTER_SUGGESTIONS = [
+  'anthropic/claude-opus-4.8',
+  'anthropic/claude-sonnet-5',
+  'anthropic/claude-haiku-4.5',
+  'openai/gpt-5.5',
+  'google/gemini-3.5-flash',
+  'qwen/qwen3.6-flash',
+  'google/gemma-4-31b-it:free',
+];
+export const DEFAULT_OPENROUTER_MODEL = 'anthropic/claude-opus-4.8';
+
+export function getProvider() {
+  return localStorage.getItem('aiProvider') || 'anthropic';
 }
 
-export function getModel() {
-  return localStorage.getItem('aiModel') || DEFAULT_MODEL;
+export function getApiKey(provider = getProvider()) {
+  const storageKey = provider === 'openrouter' ? 'openrouterKey' : 'apiKey';
+  return (localStorage.getItem(storageKey) || '').trim();
+}
+
+export function setApiKey(value, provider = getProvider()) {
+  const storageKey = provider === 'openrouter' ? 'openrouterKey' : 'apiKey';
+  localStorage.setItem(storageKey, value.trim());
+}
+
+export function getModel(provider = getProvider()) {
+  if (provider === 'openrouter') {
+    return localStorage.getItem('openrouterModel') || DEFAULT_OPENROUTER_MODEL;
+  }
+  return localStorage.getItem('aiModel') || DEFAULT_ANTHROPIC_MODEL;
 }
 
 // Фото с камеры бывают 4000+ px — ужимаем до 1568 по длинной стороне,
@@ -108,13 +143,18 @@ const PLATE_PROMPT = `На фото — еда (тарелка/блюдо), ти
 - Ориентируйся на видимые размеры посуды и порций; оценивай реалистично.
 - Если на фото не еда или оценить невозможно, поставь ok=false и объясни в notes.`;
 
-async function callClaude(prompt, schema, imageB64) {
-  const apiKey = getApiKey();
-  if (!apiKey) throw new Error('Не задан API-ключ. Добавь его на вкладке «Настройки».');
+// Модель может обернуть JSON в ```-заборы или добавить текст — вырезаем объект.
+function extractJson(text) {
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start === -1 || end <= start) throw new Error('В ответе модели нет JSON, попробуй ещё раз.');
+  return JSON.parse(text.slice(start, end + 1));
+}
 
+async function callAnthropic(prompt, schema, imageB64, apiKey) {
   let resp;
   try {
-    resp = await fetch(API_URL, {
+    resp = await fetch(ANTHROPIC_URL, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -123,7 +163,7 @@ async function callClaude(prompt, schema, imageB64) {
         'anthropic-dangerous-direct-browser-access': 'true',
       },
       body: JSON.stringify({
-        model: getModel(),
+        model: getModel('anthropic'),
         max_tokens: 2048,
         output_config: { format: { type: 'json_schema', schema } },
         messages: [{
@@ -136,19 +176,10 @@ async function callClaude(prompt, schema, imageB64) {
       }),
     });
   } catch {
-    throw new Error('Сеть недоступна. api.anthropic.com не открывается с российских IP — проверь VPN.');
+    throw new Error('Сеть недоступна. api.anthropic.com не открывается с российских IP — проверь VPN, или переключись на OpenRouter в настройках.');
   }
 
-  if (!resp.ok) {
-    let msg = `ошибка API (${resp.status})`;
-    try {
-      const err = await resp.json();
-      if (err?.error?.message) msg = err.error.message;
-    } catch { /* тело не JSON */ }
-    if (resp.status === 401) msg = 'Неверный API-ключ — проверь его в настройках.';
-    if (resp.status === 429) msg = 'Слишком много запросов, подожди минуту.';
-    throw new Error(msg);
-  }
+  if (!resp.ok) throw await apiError(resp);
 
   const data = await resp.json();
   if (data.stop_reason === 'refusal') {
@@ -156,7 +187,78 @@ async function callClaude(prompt, schema, imageB64) {
   }
   const text = (data.content || []).find(b => b.type === 'text')?.text;
   if (!text) throw new Error('Пустой ответ модели, попробуй ещё раз.');
-  const parsed = JSON.parse(text);
+  return extractJson(text);
+}
+
+async function callOpenRouter(prompt, schema, imageB64, apiKey, withFormat = true) {
+  const body = {
+    model: getModel('openrouter'),
+    max_tokens: 2048,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageB64}` } },
+        { type: 'text', text: `${prompt}\n\nОтветь строго одним JSON-объектом по заданной схеме, без пояснений и без markdown.` },
+      ],
+    }],
+  };
+  if (withFormat) {
+    body.response_format = {
+      type: 'json_schema',
+      json_schema: { name: 'result', strict: true, schema },
+    };
+  }
+
+  let resp;
+  try {
+    resp = await fetch(OPENROUTER_URL, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${apiKey}`,
+        'x-title': 'skai.food',
+      },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new Error('Сеть недоступна — openrouter.ai не отвечает.');
+  }
+
+  // Не каждая модель каталога умеет строгий json_schema —
+  // при 400 пробуем ещё раз без него (JSON затребован промптом).
+  if (resp.status === 400 && withFormat) {
+    return callOpenRouter(prompt, schema, imageB64, apiKey, false);
+  }
+  if (!resp.ok) throw await apiError(resp);
+
+  const data = await resp.json();
+  const text = data.choices?.[0]?.message?.content;
+  if (!text) throw new Error('Пустой ответ модели, попробуй ещё раз.');
+  return extractJson(typeof text === 'string' ? text : JSON.stringify(text));
+}
+
+async function apiError(resp) {
+  let msg = `ошибка API (${resp.status})`;
+  try {
+    const err = await resp.json();
+    if (err?.error?.message) msg = err.error.message;
+  } catch { /* тело не JSON */ }
+  if (resp.status === 401) msg = 'Неверный API-ключ — проверь его в настройках.';
+  if (resp.status === 402) msg = 'На счету OpenRouter недостаточно средств.';
+  if (resp.status === 404) msg = 'Модель не найдена — проверь её название в настройках.';
+  if (resp.status === 429) msg = 'Слишком много запросов, подожди минуту.';
+  return new Error(msg);
+}
+
+async function callVision(prompt, schema, imageB64) {
+  const provider = getProvider();
+  const apiKey = getApiKey(provider);
+  if (!apiKey) {
+    throw new Error(`Не задан API-ключ ${provider === 'openrouter' ? 'OpenRouter' : 'Anthropic'}. Добавь его на вкладке «Настройки».`);
+  }
+  const parsed = provider === 'openrouter'
+    ? await callOpenRouter(prompt, schema, imageB64, apiKey)
+    : await callAnthropic(prompt, schema, imageB64, apiKey);
   if (parsed.ok === false) {
     throw new Error(parsed.notes || 'Не удалось распознать фото.');
   }
@@ -165,7 +267,7 @@ async function callClaude(prompt, schema, imageB64) {
 
 export async function recognizeLabel(file) {
   const imageB64 = await fileToBase64Jpeg(file);
-  return callClaude(LABEL_PROMPT, LABEL_SCHEMA, imageB64);
+  return callVision(LABEL_PROMPT, LABEL_SCHEMA, imageB64);
 }
 
 export async function recognizePlate(file, comment) {
@@ -173,5 +275,5 @@ export async function recognizePlate(file, comment) {
   const prompt = comment?.trim()
     ? `${PLATE_PROMPT}\n\nУточнение от пользователя (доверяй ему больше, чем своей оценке): ${comment.trim()}`
     : PLATE_PROMPT;
-  return callClaude(prompt, PLATE_SCHEMA, imageB64);
+  return callVision(prompt, PLATE_SCHEMA, imageB64);
 }
