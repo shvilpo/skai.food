@@ -1,0 +1,315 @@
+:root {
+  --bg: #f4f4f0;
+  --card: #ffffff;
+  --text: #1d211e;
+  --muted: #6b7370;
+  --accent: #3a7d44;
+  --accent-soft: #e2efe4;
+  --danger: #b3402f;
+  --border: #e3e5e0;
+  --over: #d98324;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141715;
+    --card: #1e2320;
+    --text: #e8ebe8;
+    --muted: #949c96;
+    --accent: #6fbf7a;
+    --accent-soft: #26382a;
+    --danger: #e06651;
+    --border: #2c322e;
+    --over: #e09b45;
+  }
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100dvh;
+}
+
+#view {
+  padding: calc(12px + env(safe-area-inset-top)) 14px 120px;
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+/* ---- нижняя навигация ---- */
+.tabbar {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  display: flex;
+  background: var(--card);
+  border-top: 1px solid var(--border);
+  padding-bottom: env(safe-area-inset-bottom);
+  z-index: 10;
+}
+.tabbar button {
+  flex: 1;
+  padding: 8px 0 6px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  cursor: pointer;
+}
+.tabbar button .ico { font-size: 20px; }
+.tabbar button.active { color: var(--accent); font-weight: 600; }
+
+/* ---- дневник ---- */
+.datebar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.nav-btn {
+  width: 40px; height: 40px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  font-size: 22px;
+  cursor: pointer;
+}
+.nav-btn:disabled { opacity: .35; }
+.date-title {
+  flex: 1;
+  border: none;
+  background: none;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+  text-transform: capitalize;
+  cursor: pointer;
+}
+.date-hint { font-size: 12px; color: var(--accent); font-weight: 400; }
+
+.tiles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.tile {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px 12px;
+}
+.tile-label { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+.tile-value { font-size: 19px; font-weight: 700; }
+.tile-unit { font-size: 12px; font-weight: 400; color: var(--muted); }
+.bar {
+  height: 5px;
+  background: var(--accent-soft);
+  border-radius: 3px;
+  margin-top: 7px;
+  overflow: hidden;
+}
+.bar-fill { height: 100%; background: var(--accent); border-radius: 3px; }
+.bar-fill.over { background: var(--over); }
+
+/* ---- списки записей / продуктов ---- */
+.entries { display: flex; flex-direction: column; gap: 8px; }
+.entry {
+  width: 100%;
+  text-align: left;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px 14px;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+}
+.entry-main {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.entry-name { font-weight: 600; }
+.entry-grams { color: var(--muted); font-size: 14px; white-space: nowrap; }
+.entry-sub { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.leaf { font-size: 13px; }
+.empty { color: var(--muted); text-align: center; padding: 32px 0; }
+
+/* ---- плавающая кнопка ---- */
+.fab {
+  position: fixed;
+  right: 16px;
+  bottom: calc(72px + env(safe-area-inset-bottom));
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 14px 22px;
+  font-size: 16px;
+  font-weight: 600;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .25);
+  cursor: pointer;
+  z-index: 9;
+}
+
+/* ---- поиск ---- */
+.searchbar { margin-bottom: 12px; }
+input[type="search"], input[type="number"], input[type="text"], input[type="password"], input:not([type]) {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 16px; /* iOS: не зумить при фокусе */
+}
+
+/* ---- статистика ---- */
+.section-title { font-size: 17px; margin: 6px 0 10px; }
+.table-wrap { overflow-x: auto; }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+}
+th, td { padding: 8px 10px; text-align: right; font-size: 14px; }
+th:first-child, td:first-child { text-align: left; }
+thead th { color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--border); }
+tfoot td { border-top: 1px solid var(--border); font-weight: 700; }
+tr.dim td { color: var(--muted); }
+.note { font-size: 12px; color: var(--muted); margin-top: 8px; }
+
+/* ---- настройки / формы ---- */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+  margin-bottom: 20px;
+}
+.form-grid { display: flex; flex-direction: column; gap: 10px; }
+.form-grid label { font-size: 13px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+fieldset {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+legend { font-size: 12px; color: var(--muted); padding: 0 6px; }
+.check { flex-direction: row !important; align-items: center; gap: 8px !important; font-size: 14px !important; color: var(--text) !important; }
+
+.btn {
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+}
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.danger { color: var(--danger); border-color: var(--danger); background: none; }
+.file-btn { display: block; }
+
+/* ---- диалог ---- */
+dialog {
+  width: min(92vw, 480px);
+  max-height: 85dvh;
+  border: none;
+  border-radius: 18px;
+  background: var(--card);
+  color: var(--text);
+  padding: 16px;
+  margin: auto;
+  overflow-y: auto;
+}
+dialog::backdrop { background: rgba(0, 0, 0, .45); }
+.dlg-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  gap: 10px;
+}
+.dlg-head h3 { font-size: 17px; }
+.dlg-close {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+.dlg-body { display: flex; flex-direction: column; gap: 10px; }
+.dlg-body label { font-size: 13px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+
+.seg { display: flex; background: var(--accent-soft); border-radius: 10px; padding: 3px; }
+.seg-btn {
+  border: none;
+  background: none;
+  padding: 7px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+}
+.seg-btn.active { background: var(--card); color: var(--accent); }
+
+.pick-list {
+  max-height: 32dvh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pick {
+  text-align: left;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text);
+  font-size: 15px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+}
+.pick.selected { border-color: var(--accent); background: var(--accent-soft); }
+.pick-sub { color: var(--muted); font-size: 13px; white-space: nowrap; }
+
+/* ---- тост ---- */
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(80px + env(safe-area-inset-bottom));
+  transform: translateX(-50%) translateY(20px);
+  background: var(--text);
+  color: var(--bg);
+  padding: 10px 18px;
+  border-radius: 12px;
+  font-size: 14px;
+  opacity: 0;
+  transition: .25s;
+  pointer-events: none;
+  z-index: 30;
+  max-width: 90vw;
+}
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
