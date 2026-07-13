@@ -868,15 +868,20 @@ async function lookupProduct(query, btn) {
   if (btn) { btn.disabled = true; btn.textContent = 'Ищу…'; }
   try {
     const data = await ai.lookupFood(query);
-    showProductDialog(null, {
+    const per = data.per || {};
+    const vals = { kcal: per.kcal ?? '', protein: per.protein ?? 0, fiber: per.fiber ?? 0 };
+    const prefill = {
       name: data.name || query,
-      per100: {
-        kcal: data.per100?.kcal ?? '',
-        protein: data.per100?.protein ?? 0,
-        fiber: data.per100?.fiber ?? 0,
-      },
       plantPercent: Math.max(0, Math.min(100, Math.round(data.plantPercent || 0))),
-    });
+    };
+    if (data.unit === 'pcs') {
+      prefill.unit = 'pcs';
+      prefill.perPiece = vals;
+      prefill.pieceGrams = data.pieceGrams || null;
+    } else {
+      prefill.per100 = vals;
+    }
+    showProductDialog(null, prefill);
     if (data.notes) toast(data.notes);
   } catch (err) {
     if (btn) { btn.disabled = false; btn.textContent = '🔎 Найти через ИИ и добавить'; }
@@ -890,7 +895,7 @@ async function lookupIntoManual(query, btn) {
   if (btn) { btn.disabled = true; btn.textContent = 'Ищу…'; }
   try {
     const data = await ai.lookupFood(query);
-    fillManualFromData({ name: data.name || query, per100: data.per100, plantPercent: data.plantPercent });
+    fillManualFromData({ name: data.name || query, unit: data.unit, per: data.per, pieceGrams: data.pieceGrams, plantPercent: data.plantPercent });
     toast('Проверь данные и запиши' + (data.notes ? '. ' + data.notes : ''));
   } catch (err) {
     if (btn) { btn.disabled = false; btn.textContent = `🔎 Найти «${query}» через ИИ`; }
