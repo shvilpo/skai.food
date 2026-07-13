@@ -373,6 +373,19 @@ select {
 .dish-detail-row { padding: 3px 0; }
 .dish-eaten { color: var(--accent); font-weight: 600; }
 
+/* ---- единица измерения ---- */
+.unit-badge {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 6px;
+  padding: 1px 6px;
+  vertical-align: middle;
+}
+.unit-seg { margin-bottom: 2px; }
+.note-inline { font-weight: 400; color: var(--muted); font-size: 13px; }
+
 /* ---- тост ---- */
 #toast {
   position: fixed;

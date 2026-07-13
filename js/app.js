@@ -94,14 +94,48 @@ async function loadTargets() {
   if (rec) state.targets = { ...DEFAULT_TARGETS, ...rec.value };
 }
 
+// Единица измерения продукта: 'g' — КБЖУ на 100 г; 'pcs' — на 1 шт.
+function productUnit(p) { return p && p.unit === 'pcs' ? 'pcs' : 'g'; }
+// Значения КБЖУ на выбранную единицу (perPiece для шт, per100 для граммов).
+function unitPer(p) {
+  return productUnit(p) === 'pcs'
+    ? (p.perPiece || { kcal: 0, protein: 0, fiber: 0 })
+    : (p.per100 || { kcal: 0, protein: 0, fiber: 0 });
+}
+function unitName(u) { return u === 'pcs' ? '1 шт' : '100 г'; }   // для «на …»
+function qtyUnit(u) { return u === 'pcs' ? 'шт' : 'г'; }          // для «съедено …»
+
 function entryNutrients(e) {
-  const k = e.grams / 100;
+  if (e.unit === 'pcs') {
+    const n = e.pieces || 0;
+    const pp = e.perPiece || {};
+    return {
+      kcal: (pp.kcal || 0) * n,
+      protein: (pp.protein || 0) * n,
+      fiber: (pp.fiber || 0) * n,
+      // растительная масса штучного продукта считается только если задан вес 1 шт
+      plant: n * (e.pieceGrams || 0) * (e.plantPercent || 0) / 100,
+    };
+  }
+  const k = (e.grams || 0) / 100;
+  const per = e.per100 || {};
   return {
-    kcal: e.per100.kcal * k,
-    protein: e.per100.protein * k,
-    fiber: e.per100.fiber * k,
-    plant: e.grams * (e.plantPercent || 0) / 100,
+    kcal: (per.kcal || 0) * k,
+    protein: (per.protein || 0) * k,
+    fiber: (per.fiber || 0) * k,
+    plant: (e.grams || 0) * (e.plantPercent || 0) / 100,
   };
+}
+
+// Приводит КБЖУ продукта к «на 100 г» (для блюд, которые всегда граммовые).
+// Для штучного продукта нужен вес 1 шт; иначе null.
+function productPer100(p) {
+  if (productUnit(p) === 'g') return { ...(p.per100 || { kcal: 0, protein: 0, fiber: 0 }) };
+  const g = num(p.pieceGrams, 0);
+  if (g <= 0) return null;
+  const f = 100 / g;
+  const pp = p.perPiece || {};
+  return { kcal: (pp.kcal || 0) * f, protein: (pp.protein || 0) * f, fiber: (pp.fiber || 0) * f };
 }
 
 function totals(entries) {
@@ -140,10 +174,11 @@ function renderDiary() {
   const isToday = state.date === todayStr();
   const rows = state.entries.map(e => {
     const n = entryNutrients(e);
+    const qty = e.unit === 'pcs' ? `${fmt(e.pieces, 2)} шт` : `${fmt(e.grams, 1)} г`;
     return `<button class="entry" data-action="edit-entry" data-id="${e.id}">
       <div class="entry-main">
         <span class="entry-name">${e.fromDish ? '🍲 ' : ''}${esc(e.name)}</span>
-        <span class="entry-grams">${fmt(e.grams, 1)} г</span>
+        <span class="entry-grams">${qty}</span>
       </div>
       <div class="entry-sub">${fmt(n.kcal)} ккал · Б ${fmt(n.protein, 1)} · Кл ${fmt(n.fiber, 1)} · Раст ${fmt(n.plant)}${e.fromDish ? ` · из: ${esc(e.fromDish)}` : ''}</div>
     </button>`;
@@ -169,14 +204,18 @@ function productListInner(query) {
   const q = query.trim().toLowerCase();
   const list = q ? state.products.filter(p => p.name.toLowerCase().includes(q)) : state.products;
   if (list.length) {
-    return list.map(p => `
+    return list.map(p => {
+      const u = productUnit(p);
+      const per = unitPer(p);
+      return `
       <button class="entry" data-action="edit-product" data-id="${p.id}">
         <div class="entry-main">
-          <span class="entry-name">${esc(p.name)}</span>
+          <span class="entry-name">${esc(p.name)}${u === 'pcs' ? ' <span class="unit-badge">шт</span>' : ''}</span>
           ${p.plantPercent ? '<span class="leaf">🌿</span>' : ''}
         </div>
-        <div class="entry-sub">на 100 г: ${fmt(p.per100.kcal)} ккал · Б ${fmt(p.per100.protein, 1)} · Кл ${fmt(p.per100.fiber, 1)}</div>
-      </button>`).join('');
+        <div class="entry-sub">на ${unitName(u)}: ${fmt(per.kcal)} ккал · Б ${fmt(per.protein, 1)} · Кл ${fmt(per.fiber, 1)}</div>
+      </button>`;
+    }).join('');
   }
   const trimmed = query.trim();
   if (!trimmed) return '<p class="empty">База пуста.</p>';
@@ -267,7 +306,7 @@ function renderDishPickList(query) {
   const list = state.products.filter(p => p.name.toLowerCase().includes(q)).slice(0, 8);
   el.innerHTML = list.length
     ? list.map(p => `<button type="button" class="pick" data-action="dish-add-product" data-id="${p.id}">
-        ${esc(p.name)}<span class="pick-sub">${fmt(p.per100.kcal)} ккал/100 г</span></button>`).join('')
+        ${esc(p.name)}<span class="pick-sub">${fmt(unitPer(p).kcal)} ккал/${qtyUnit(productUnit(p))}</span></button>`).join('')
     : '<p class="empty">Не найдено.</p>';
 }
 
@@ -514,6 +553,30 @@ function showDialog(html) {
   dlg.showModal();
 }
 
+// Переключатель единицы (на 100 г / на 1 шт) + скрытое поле unit.
+function unitToggleHTML(unit) {
+  const pcs = unit === 'pcs';
+  return `<div class="seg unit-seg">
+    <button type="button" class="seg-btn ${pcs ? '' : 'active'}" data-action="unit-toggle" data-unit="g">на 100 г</button>
+    <button type="button" class="seg-btn ${pcs ? 'active' : ''}" data-action="unit-toggle" data-unit="pcs">на 1 шт</button>
+  </div>
+  <input type="hidden" name="unit" value="${pcs ? 'pcs' : 'g'}">`;
+}
+
+// Блок КБЖУ + вес 1 шт (только для шт) + растительная доля.
+function nutritionFieldsetHTML(unit, per, pieceGrams, plantPercent) {
+  const pcs = unit === 'pcs';
+  return `
+    <fieldset><legend>На <span class="unit-legend">${pcs ? '1 шт' : '100 г'}</span></legend>
+      <label>Ккал <input name="kcal" type="number" inputmode="decimal" step="any" required value="${per.kcal ?? ''}"></label>
+      <label>Белок, г <input name="protein" type="number" inputmode="decimal" step="any" value="${per.protein ?? 0}"></label>
+      <label>Клетчатка, г <input name="fiber" type="number" inputmode="decimal" step="any" value="${per.fiber ?? 0}"></label>
+      <label class="piece-grams-row" ${pcs ? '' : 'hidden'}>Вес 1 шт, г <span class="note-inline">(для растит. массы, необязательно)</span>
+        <input name="pieceGrams" type="number" inputmode="decimal" step="any" value="${pieceGrams ?? ''}"></label>
+      <label>Растительная доля, % <input name="plantPercent" type="number" inputmode="numeric" min="0" max="100" value="${plantPercent || 0}"></label>
+    </fieldset>`;
+}
+
 function productListHTML(query, selectedId) {
   const q = query.trim().toLowerCase();
   const list = (q ? state.products.filter(p => p.name.toLowerCase().includes(q)) : state.products).slice(0, 30);
@@ -523,10 +586,13 @@ function productListHTML(query, selectedId) {
     return `<p class="empty">Не найдено.</p>
       <button type="button" class="btn" data-action="lookup-into-manual" data-query="${esc(trimmed)}">🔎 Найти «${esc(trimmed)}» через ИИ</button>`;
   }
-  return list.map(p => `
+  return list.map(p => {
+    const u = productUnit(p);
+    return `
     <button type="button" class="pick${p.id === selectedId ? ' selected' : ''}" data-action="pick-product" data-id="${p.id}">
-      ${esc(p.name)}<span class="pick-sub">${fmt(p.per100.kcal)} ккал/100 г</span>
-    </button>`).join('');
+      ${esc(p.name)}<span class="pick-sub">${fmt(unitPer(p).kcal)} ккал/${qtyUnit(u)}</span>
+    </button>`;
+  }).join('');
 }
 
 function dishListHTML(query, selectedId) {
@@ -566,19 +632,15 @@ function showEntryDialog() {
       <input type="search" id="dlgSearch" placeholder="Найти продукт…" autocomplete="off">
       <div id="dlgProductList" class="pick-list">${productListHTML('', null)}</div>
       <input type="hidden" id="pickedId">
-      <label>Съедено, г <input id="baseGrams" type="number" inputmode="decimal" value="100" min="1" required></label>
+      <label>Съедено, <span id="baseQtyUnit">г</span> <input id="baseGrams" type="number" inputmode="decimal" value="100" min="0" step="any" required></label>
       <button type="submit" class="btn primary">Записать</button>
     </form>
 
     <form id="entryManualForm" class="dlg-body" hidden>
-      <label>Название <input name="name" required placeholder="Например: борщ"></label>
-      <label>Съедено, г <input name="grams" type="number" inputmode="decimal" value="100" min="1" required></label>
-      <fieldset><legend>На 100 г</legend>
-        <label>Ккал <input name="kcal" type="number" inputmode="decimal" step="any" required></label>
-        <label>Белок, г <input name="protein" type="number" inputmode="decimal" step="any" value="0"></label>
-        <label>Клетчатка, г <input name="fiber" type="number" inputmode="decimal" step="any" value="0"></label>
-        <label>Растительная доля, % <input name="plantPercent" type="number" inputmode="numeric" min="0" max="100" value="0"></label>
-      </fieldset>
+      <label>Название <input name="name" required placeholder="Например: крыло Ростикс"></label>
+      ${unitToggleHTML('g')}
+      <label>Съедено, <span class="unit-qty">г</span> <input name="qty" type="number" inputmode="decimal" value="100" min="0" step="any" required></label>
+      ${nutritionFieldsetHTML('g', { kcal: '', protein: 0, fiber: 0 }, '', 0)}
       <label class="check"><input type="checkbox" name="saveToBase" checked> сохранить в базу продуктов</label>
       <button type="submit" class="btn primary">Записать</button>
     </form>
@@ -643,13 +705,22 @@ function showEntryDialog() {
     const pid = dlg.querySelector('#pickedId').value;
     const p = state.products.find(x => x.id === pid);
     if (!p) { toast('Сначала выбери продукт из списка'); return; }
-    const grams = num(dlg.querySelector('#baseGrams').value, 0);
-    if (grams <= 0) return;
-    await db.put('entries', {
+    const qty = num(dlg.querySelector('#baseGrams').value, 0);
+    if (qty <= 0) return;
+    const entry = {
       id: uid(), date: state.date, ts: Date.now(),
-      productId: p.id, name: p.name, grams,
-      per100: { ...p.per100 }, plantPercent: p.plantPercent || 0,
-    });
+      productId: p.id, name: p.name, plantPercent: p.plantPercent || 0,
+    };
+    if (productUnit(p) === 'pcs') {
+      entry.unit = 'pcs';
+      entry.pieces = qty;
+      entry.perPiece = { ...(p.perPiece || {}) };
+      entry.pieceGrams = p.pieceGrams || null;
+    } else {
+      entry.grams = qty;
+      entry.per100 = { ...(p.per100 || {}) };
+    }
+    await db.put('entries', entry);
     p.usedCount = (p.usedCount || 0) + 1;
     await db.put('products', p);
     dlg.close();
@@ -662,27 +733,27 @@ function showEntryDialog() {
     ev.preventDefault();
     const f = new FormData(ev.target);
     const name = String(f.get('name')).trim();
-    const grams = num(f.get('grams'), 0);
-    if (!name || grams <= 0) return;
-    const per100 = {
-      kcal: num(f.get('kcal')),
-      protein: num(f.get('protein')),
-      fiber: num(f.get('fiber')),
-    };
+    const qty = num(f.get('qty'), 0);
+    if (!name || qty <= 0) return;
+    const unit = f.get('unit') === 'pcs' ? 'pcs' : 'g';
+    const vals = { kcal: num(f.get('kcal')), protein: num(f.get('protein')), fiber: num(f.get('fiber')) };
     const plantPercent = Math.max(0, Math.min(100, num(f.get('plantPercent'))));
+    const pieceGrams = unit === 'pcs' ? (num(f.get('pieceGrams')) || null) : null;
+
     let productId = null;
     if (f.get('saveToBase')) {
       productId = uid();
-      await db.put('products', {
-        id: productId, name, per100: { ...per100 }, plantPercent,
-        source: 'manual', usedCount: 1, createdAt: Date.now(),
-      });
+      const prod = { id: productId, name, unit, plantPercent, source: 'manual', edited: true, usedCount: 1, createdAt: Date.now() };
+      if (unit === 'pcs') { prod.perPiece = { ...vals }; prod.pieceGrams = pieceGrams; }
+      else { prod.per100 = { ...vals }; }
+      await db.put('products', prod);
       await refreshProducts();
     }
-    await db.put('entries', {
-      id: uid(), date: state.date, ts: Date.now(),
-      productId, name, grams, per100, plantPercent,
-    });
+
+    const entry = { id: uid(), date: state.date, ts: Date.now(), productId, name, plantPercent };
+    if (unit === 'pcs') { entry.unit = 'pcs'; entry.pieces = qty; entry.perPiece = { ...vals }; entry.pieceGrams = pieceGrams; }
+    else { entry.grams = qty; entry.per100 = { ...vals }; }
+    await db.put('entries', entry);
     dlg.close();
     await refreshEntries();
     render();
@@ -690,21 +761,25 @@ function showEntryDialog() {
 }
 
 function showEditEntryDialog(entry) {
+  const pcs = entry.unit === 'pcs';
+  const cur = pcs ? entry.pieces : entry.grams;
   showDialog(`
     <div class="dlg-head"><h3>${esc(entry.name)}</h3>
       <button type="button" class="dlg-close" data-action="dlg-close">✕</button></div>
     <form id="editEntryForm" class="dlg-body">
-      <label>Съедено, г <input name="grams" type="number" inputmode="decimal" value="${entry.grams}" min="1" required></label>
+      <label>Съедено, ${pcs ? 'шт' : 'г'} <input name="qty" type="number" inputmode="decimal" value="${cur}" min="0" step="any" required></label>
       <button type="submit" class="btn primary">Сохранить</button>
       <button type="button" class="btn danger" data-action="delete-entry" data-id="${entry.id}">Удалить запись</button>
     </form>`);
 
   dlg.querySelector('#editEntryForm').addEventListener('submit', async ev => {
     ev.preventDefault();
-    entry.grams = num(new FormData(ev.target).get('grams'), entry.grams);
+    const q = num(new FormData(ev.target).get('qty'), cur);
+    if (pcs) entry.pieces = q; else entry.grams = q;
     await db.put('entries', entry);
     dlg.close();
     await refreshEntries();
+    await refreshDishes();
     render();
   });
 }
@@ -713,17 +788,15 @@ function showEditEntryDialog(entry) {
 // (например, из ИИ-догрузки): показываем значения, но сохраняем как новый.
 function showProductDialog(product, prefill) {
   const p = product || prefill || { name: '', per100: { kcal: '', protein: 0, fiber: 0 }, plantPercent: 0 };
+  const unit = productUnit(p);
+  const per = unitPer(p);
   showDialog(`
     <div class="dlg-head"><h3>${product ? 'Продукт' : 'Новый продукт'}</h3>
       <button type="button" class="dlg-close" data-action="dlg-close">✕</button></div>
     <form id="productForm" class="dlg-body">
       <label>Название <input name="name" required value="${esc(p.name)}"></label>
-      <fieldset><legend>На 100 г</legend>
-        <label>Ккал <input name="kcal" type="number" inputmode="decimal" step="any" required value="${p.per100.kcal}"></label>
-        <label>Белок, г <input name="protein" type="number" inputmode="decimal" step="any" value="${p.per100.protein}"></label>
-        <label>Клетчатка, г <input name="fiber" type="number" inputmode="decimal" step="any" value="${p.per100.fiber}"></label>
-        <label>Растительная доля, % <input name="plantPercent" type="number" inputmode="numeric" min="0" max="100" value="${p.plantPercent || 0}"></label>
-      </fieldset>
+      ${unitToggleHTML(unit)}
+      ${nutritionFieldsetHTML(unit, per, p.pieceGrams, p.plantPercent)}
       <button type="submit" class="btn primary">Сохранить</button>
       ${product ? `<button type="button" class="btn danger" data-action="delete-product" data-id="${product.id}">Удалить продукт</button>` : ''}
     </form>`);
@@ -731,10 +804,14 @@ function showProductDialog(product, prefill) {
   dlg.querySelector('#productForm').addEventListener('submit', async ev => {
     ev.preventDefault();
     const f = new FormData(ev.target);
+    const name = String(f.get('name')).trim();
+    if (!name) return;
+    const u = f.get('unit') === 'pcs' ? 'pcs' : 'g';
+    const vals = { kcal: num(f.get('kcal')), protein: num(f.get('protein')), fiber: num(f.get('fiber')) };
     const rec = {
       id: product ? product.id : uid(),
-      name: String(f.get('name')).trim(),
-      per100: { kcal: num(f.get('kcal')), protein: num(f.get('protein')), fiber: num(f.get('fiber')) },
+      name,
+      unit: u,
       plantPercent: Math.max(0, Math.min(100, num(f.get('plantPercent')))),
       source: product ? product.source : 'manual',
       // помечаем как отредактированный, чтобы правки пережили обновление
@@ -743,7 +820,8 @@ function showProductDialog(product, prefill) {
       usedCount: product ? (product.usedCount || 0) : 0,
       createdAt: product ? product.createdAt : Date.now(),
     };
-    if (!rec.name) return;
+    if (u === 'pcs') { rec.perPiece = vals; rec.pieceGrams = num(f.get('pieceGrams')) || null; }
+    else { rec.per100 = vals; }
     await db.put('products', rec);
     dlg.close();
     await refreshProducts();
@@ -817,13 +895,20 @@ async function lookupIntoManual(query, btn) {
 }
 
 // Заполняет форму «Вручную» и переключает на неё сегмент диалога.
-function fillManualFromData(p) {
+// d: { name, unit?, per?/per100?, pieceGrams?, plantPercent? }
+function fillManualFromData(d) {
   const form = dlg.querySelector('#entryManualForm');
-  form.elements.name.value = p.name || '';
-  form.elements.kcal.value = p.per100?.kcal ?? '';
-  form.elements.protein.value = p.per100?.protein ?? 0;
-  form.elements.fiber.value = p.per100?.fiber ?? 0;
-  form.elements.plantPercent.value = Math.max(0, Math.min(100, Math.round(p.plantPercent || 0)));
+  const unit = d.unit === 'pcs' ? 'pcs' : 'g';
+  const per = d.per || d.per100 || {};
+  form.elements.name.value = d.name || '';
+  // через переключатель — чтобы обновились легенда, метка «съедено» и поле веса шт
+  form.querySelector(`[data-action="unit-toggle"][data-unit="${unit}"]`).click();
+  form.elements.kcal.value = per.kcal ?? '';
+  form.elements.protein.value = per.protein ?? 0;
+  form.elements.fiber.value = per.fiber ?? 0;
+  if (form.elements.pieceGrams) form.elements.pieceGrams.value = d.pieceGrams ?? '';
+  form.elements.plantPercent.value = Math.max(0, Math.min(100, Math.round(d.plantPercent || 0)));
+  form.elements.qty.value = unit === 'pcs' ? 1 : 100;
   dlg.querySelector('[data-action="entry-mode"][data-mode="manual"]').click();
 }
 
@@ -1009,6 +1094,23 @@ document.body.addEventListener('click', async ev => {
     dlg.querySelector('#pickedId').value = id;
     dlg.querySelector('#dlgProductList').innerHTML =
       productListHTML(dlg.querySelector('#dlgSearch').value, id);
+    // подстроить метку и значение количества под единицу продукта
+    const picked = state.products.find(x => x.id === id);
+    if (picked) {
+      const u = productUnit(picked);
+      dlg.querySelector('#baseQtyUnit').textContent = qtyUnit(u);
+      dlg.querySelector('#baseGrams').value = u === 'pcs' ? 1 : 100;
+    }
+  } else if (action === 'unit-toggle') {
+    const form = el.closest('form');
+    const u = el.dataset.unit;
+    form.querySelectorAll('[data-action="unit-toggle"]').forEach(b =>
+      b.classList.toggle('active', b.dataset.unit === u));
+    form.querySelector('[name="unit"]').value = u;
+    form.querySelectorAll('.unit-legend').forEach(s => s.textContent = unitName(u));
+    form.querySelectorAll('.unit-qty').forEach(s => s.textContent = qtyUnit(u));
+    const pg = form.querySelector('.piece-grams-row');
+    if (pg) pg.hidden = u !== 'pcs';
   } else if (action === 'add-dish') {
     showDishDialog(null);
   } else if (action === 'open-dish') {
@@ -1020,14 +1122,21 @@ document.body.addEventListener('click', async ev => {
   } else if (action === 'dish-add-product') {
     const p = state.products.find(x => x.id === id);
     if (p) {
-      dishDraft.components.push({
-        productId: p.id, name: p.name, grams: 100,
-        per100: { ...p.per100 }, plantPercent: p.plantPercent || 0,
-      });
-      renderDishComponents();
-      const s = dlg.querySelector('#dishProductSearch');
-      s.value = '';
-      renderDishPickList('');
+      // блюда всегда граммовые: штучный продукт приводим к «на 100 г» по весу
+      // 1 шт; если вес не задан — добавить нельзя
+      const per100 = productPer100(p);
+      if (!per100) {
+        toast('У продукта «на 1 шт» не задан вес штуки — укажи его в карточке, чтобы добавить в блюдо');
+      } else {
+        dishDraft.components.push({
+          productId: p.id, name: p.name, grams: 100,
+          per100, plantPercent: p.plantPercent || 0,
+        });
+        renderDishComponents();
+        const s = dlg.querySelector('#dishProductSearch');
+        s.value = '';
+        renderDishPickList('');
+      }
     }
   } else if (action === 'dish-del-component') {
     dishDraft.components.splice(Number(el.dataset.index), 1);
