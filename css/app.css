@@ -385,6 +385,7 @@ select {
 }
 .unit-seg { margin-bottom: 2px; }
 .note-inline { font-weight: 400; color: var(--muted); font-size: 13px; }
+.ai-btn { color: var(--accent); border-color: var(--accent); }
 
 /* ---- тост ---- */
 #toast {

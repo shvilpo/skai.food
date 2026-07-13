@@ -202,12 +202,17 @@ function renderDiary() {
 
 function productListInner(query) {
   const q = query.trim().toLowerCase();
+  const trimmed = query.trim();
   const list = q ? state.products.filter(p => p.name.toLowerCase().includes(q)) : state.products;
-  if (list.length) {
-    return list.map(p => {
-      const u = productUnit(p);
-      const per = unitPer(p);
-      return `
+  // кнопка ИИ-поиска доступна всегда, когда что-то введено — даже если есть
+  // частичные совпадения (нужного товара может не быть среди них)
+  const aiBtn = trimmed
+    ? `<button class="btn ai-btn" data-action="lookup-product" data-query="${esc(trimmed)}">🔎 Найти «${esc(trimmed)}» через ИИ</button>`
+    : '';
+  const rows = list.map(p => {
+    const u = productUnit(p);
+    const per = unitPer(p);
+    return `
       <button class="entry" data-action="edit-product" data-id="${p.id}">
         <div class="entry-main">
           <span class="entry-name">${esc(p.name)}${u === 'pcs' ? ' <span class="unit-badge">шт</span>' : ''}</span>
@@ -215,13 +220,10 @@ function productListInner(query) {
         </div>
         <div class="entry-sub">на ${unitName(u)}: ${fmt(per.kcal)} ккал · Б ${fmt(per.protein, 1)} · Кл ${fmt(per.fiber, 1)}</div>
       </button>`;
-    }).join('');
-  }
-  const trimmed = query.trim();
+  }).join('');
+  if (list.length) return rows + aiBtn;
   if (!trimmed) return '<p class="empty">База пуста.</p>';
-  // ничего не нашлось — предлагаем догрузить через ИИ
-  return `<p class="empty">В базе нет «${esc(trimmed)}».</p>
-    <button class="btn" data-action="lookup-product" data-query="${esc(trimmed)}">🔎 Найти через ИИ и добавить</button>`;
+  return `<p class="empty">В базе нет «${esc(trimmed)}».</p>${aiBtn}`;
 }
 
 function renderProducts() {
@@ -579,12 +581,14 @@ function nutritionFieldsetHTML(unit, per, pieceGrams, plantPercent) {
 
 function productListHTML(query, selectedId) {
   const q = query.trim().toLowerCase();
+  const trimmed = query.trim();
   const list = (q ? state.products.filter(p => p.name.toLowerCase().includes(q)) : state.products).slice(0, 30);
+  const aiBtn = trimmed
+    ? `<button type="button" class="btn ai-btn" data-action="lookup-into-manual" data-query="${esc(trimmed)}">🔎 Найти «${esc(trimmed)}» через ИИ</button>`
+    : '';
   if (!list.length) {
-    const trimmed = query.trim();
     if (!trimmed) return '<p class="empty">База пуста.</p>';
-    return `<p class="empty">Не найдено.</p>
-      <button type="button" class="btn" data-action="lookup-into-manual" data-query="${esc(trimmed)}">🔎 Найти «${esc(trimmed)}» через ИИ</button>`;
+    return `<p class="empty">Не найдено.</p>${aiBtn}`;
   }
   return list.map(p => {
     const u = productUnit(p);
@@ -592,7 +596,7 @@ function productListHTML(query, selectedId) {
     <button type="button" class="pick${p.id === selectedId ? ' selected' : ''}" data-action="pick-product" data-id="${p.id}">
       ${esc(p.name)}<span class="pick-sub">${fmt(unitPer(p).kcal)} ккал/${qtyUnit(u)}</span>
     </button>`;
-  }).join('');
+  }).join('') + aiBtn;
 }
 
 function dishListHTML(query, selectedId) {
@@ -1103,14 +1107,30 @@ document.body.addEventListener('click', async ev => {
     }
   } else if (action === 'unit-toggle') {
     const form = el.closest('form');
-    const u = el.dataset.unit;
+    const to = el.dataset.unit;
+    const from = form.querySelector('[name="unit"]').value;
+    // пересчёт КБЖУ между «на 1 шт» и «на 100 г» по весу штуки
+    if (from !== to) {
+      const g = num(form.elements.pieceGrams?.value, 0);
+      const raw = ['kcal', 'protein', 'fiber'].map(n => form.elements[n].value);
+      const hasVals = raw.some(v => String(v).trim() !== '' && num(v) !== 0);
+      if (g > 0) {
+        const factor = to === 'g' ? 100 / g : g / 100; // шт→100г: ×100/вес; 100г→шт: ×вес/100
+        ['kcal', 'protein', 'fiber'].forEach(n => {
+          const s = String(form.elements[n].value).trim();
+          if (s !== '') form.elements[n].value = Math.round(num(s) * factor * 10) / 10;
+        });
+      } else if (hasVals) {
+        toast('Укажи вес 1 шт — тогда цифры пересчитаются между «шт» и «100 г»');
+      }
+    }
     form.querySelectorAll('[data-action="unit-toggle"]').forEach(b =>
-      b.classList.toggle('active', b.dataset.unit === u));
-    form.querySelector('[name="unit"]').value = u;
-    form.querySelectorAll('.unit-legend').forEach(s => s.textContent = unitName(u));
-    form.querySelectorAll('.unit-qty').forEach(s => s.textContent = qtyUnit(u));
-    const pg = form.querySelector('.piece-grams-row');
-    if (pg) pg.hidden = u !== 'pcs';
+      b.classList.toggle('active', b.dataset.unit === to));
+    form.querySelector('[name="unit"]').value = to;
+    form.querySelectorAll('.unit-legend').forEach(s => s.textContent = unitName(to));
+    form.querySelectorAll('.unit-qty').forEach(s => s.textContent = qtyUnit(to));
+    const pgRow = form.querySelector('.piece-grams-row');
+    if (pgRow) pgRow.hidden = to !== 'pcs';
   } else if (action === 'add-dish') {
     showDishDialog(null);
   } else if (action === 'open-dish') {
