@@ -42,9 +42,31 @@ async function refreshEntries() {
 
 async function refreshDishes() {
   state.dishes = await db.getAll('dishes');
-  // новые блюда — сверху (по дате готовки, затем по времени создания)
-  state.dishes.sort((a, b) =>
-    (b.date || '').localeCompare(a.date || '') || (b.createdAt || 0) - (a.createdAt || 0));
+  // по алфавиту в обратном порядке; т.к. имя начинается с даты — самые
+  // недавние оказываются вверху
+  state.dishes.sort((a, b) => dishFullName(b).localeCompare(dishFullName(a), 'ru'));
+
+  // сколько граммов каждого блюда уже внесено в дневник (по всем дням).
+  // % съеденного = внесённые граммы / масса блюда × 100. Работает при любом
+  // числе добавлений: каждое добавление P% кладёт P% массы блюда.
+  const entries = await db.getAll('entries');
+  const byId = {};
+  const byName = {};
+  for (const e of entries) {
+    if (e.source !== 'dish') continue;
+    const g = num(e.grams);
+    if (e.dishId) byId[e.dishId] = (byId[e.dishId] || 0) + g;
+    else if (e.fromDish) byName[e.fromDish] = (byName[e.fromDish] || 0) + g;
+  }
+  state.dishEaten = { byId, byName };
+}
+
+// Процент блюда, уже внесённый в дневник.
+function dishEatenPercent(d) {
+  const eaten = state.dishEaten || { byId: {}, byName: {} };
+  const grams = (eaten.byId[d.id] || 0) + (eaten.byName[dishFullName(d)] || 0);
+  const total = d.totalGrams || dishTotals(d.components || []).grams;
+  return total > 0 ? grams / total * 100 : 0;
 }
 
 // Составное имя блюда: YYYY-MM-DD-Название
@@ -184,12 +206,13 @@ function renderProducts() {
 function renderDishes() {
   const rows = state.dishes.map(d => {
     const t = dishTotals(d.components || []);
+    const eaten = dishEatenPercent(d);
     return `<button class="entry" data-action="open-dish" data-id="${d.id}">
       <div class="entry-main">
         <span class="entry-name">${esc(dishFullName(d))}</span>
         <span class="entry-grams">${fmt(t.grams)} г</span>
       </div>
-      <div class="entry-sub">${(d.components || []).length} прод. · всего ${fmt(t.kcal)} ккал · Б ${fmt(t.protein, 1)} · Кл ${fmt(t.fiber, 1)}</div>
+      <div class="entry-sub">${(d.components || []).length} прод. · всего ${fmt(t.kcal)} ккал · Б ${fmt(t.protein, 1)} · Кл ${fmt(t.fiber, 1)}${eaten > 0 ? ` · <span class="dish-eaten">съедено ${fmt(eaten)}%</span>` : ''}</div>
     </button>`;
   }).join('');
 
@@ -236,9 +259,12 @@ function showDishDialog(dish) {
 }
 
 function renderDishPickList(query) {
-  const q = query.trim().toLowerCase();
-  const list = (q ? state.products.filter(p => p.name.toLowerCase().includes(q)) : state.products).slice(0, 20);
   const el = dlg.querySelector('#dishPickList');
+  const q = query.trim().toLowerCase();
+  // без запроса список не показываем — иначе он занимает пол-экрана и мешает
+  // добраться до кнопок; появляется только по мере ввода
+  if (!q) { el.innerHTML = ''; return; }
+  const list = state.products.filter(p => p.name.toLowerCase().includes(q)).slice(0, 8);
   el.innerHTML = list.length
     ? list.map(p => `<button type="button" class="pick" data-action="dish-add-product" data-id="${p.id}">
         ${esc(p.name)}<span class="pick-sub">${fmt(p.per100.kcal)} ккал/100 г</span></button>`).join('')
@@ -339,12 +365,13 @@ async function addDishToDiary(dish, percent) {
       id: uid(), date: state.date, ts: Date.now() + count,
       productId: c.productId || null, name: c.name, grams,
       per100: { ...c.per100 }, plantPercent: c.plantPercent || 0,
-      source: 'dish', fromDish: fullName,
+      source: 'dish', fromDish: fullName, dishId: dish.id,
     });
     count++;
   }
   dlg.close();
   await refreshEntries();
+  await refreshDishes(); // пересчитать «съедено %»
   render();
   toast(`Добавлено из блюда: ${count} ${count === 1 ? 'позиция' : 'позиц.'}`);
 }
@@ -961,6 +988,7 @@ document.body.addEventListener('click', async ev => {
     await db.del('entries', id);
     dlg.close();
     await refreshEntries();
+    await refreshDishes(); // запись могла быть из блюда — обновить «съедено %»
     render();
   } else if (action === 'add-product') {
     showProductDialog(null);
