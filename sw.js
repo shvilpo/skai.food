@@ -1,9 +1,11 @@
-const VERSION = 'skai-food-v11';
+importScripts('./js/version.js'); // задаёт self.APP_VERSION
+const VERSION = 'skai-food-' + self.APP_VERSION;
 const SHELL = [
   './',
   './index.html',
   './manifest.webmanifest',
   './css/app.css',
+  './js/version.js',
   './js/app.js',
   './js/ai.js',
   './js/db.js',

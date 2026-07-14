@@ -386,6 +386,7 @@ select {
 .unit-seg { margin-bottom: 2px; }
 .note-inline { font-weight: 400; color: var(--muted); font-size: 13px; }
 .ai-btn { color: var(--accent); border-color: var(--accent); }
+.app-version { text-align: center; color: var(--muted); font-size: 13px; margin-top: 4px; }
 
 /* ---- тост ---- */
 #toast {

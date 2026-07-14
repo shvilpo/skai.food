@@ -515,7 +515,9 @@ function renderSettings() {
       <button class="btn" data-action="export">Экспорт в JSON</button>
       <label class="btn file-btn">Импорт из JSON<input id="importFile" type="file" accept=".json,application/json" hidden></label>
       <button class="btn danger" data-action="wipe">Удалить все данные</button>
-    </div>`;
+    </div>
+
+    <p class="app-version">skai.food · версия ${esc(self.APP_VERSION || '—')}</p>`;
 
   document.getElementById('targetsForm').addEventListener('submit', async ev => {
     ev.preventDefault();
