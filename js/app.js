@@ -26,6 +26,9 @@ let photoType = 'label';
 let dishDraft = null;
 // выбранное блюдо в режиме «Блюдо» диалога добавления записи
 let entryDishId = null;
+// колбэк после сохранения продукта (например, вернуться в конструктор блюда
+// и добавить только что созданный продукт в состав)
+let afterProductSave = null;
 
 // ---------- данные ----------
 
@@ -266,14 +269,19 @@ function renderDishes() {
 
 // ---- конструктор блюда (создание / правка) ----
 
-function showDishDialog(dish) {
-  dishDraft = dish
-    ? { id: dish.id, name: dish.name, date: dish.date, createdAt: dish.createdAt,
-        components: (dish.components || []).map(c => ({ ...c, per100: { ...c.per100 } })) }
-    : { id: null, name: '', date: todayStr(), createdAt: null, components: [] };
+// keepDraft — не пересоздавать dishDraft (используется при возврате из карточки
+// продукта, чтобы сохранить уже введённый состав)
+function showDishDialog(dish, keepDraft) {
+  if (!keepDraft) {
+    dishDraft = dish
+      ? { id: dish.id, name: dish.name, date: dish.date, createdAt: dish.createdAt,
+          components: (dish.components || []).map(c => ({ ...c, per100: { ...c.per100 } })) }
+      : { id: null, name: '', date: todayStr(), createdAt: null, components: [] };
+  }
+  const isEdit = !!dishDraft.id;
 
   showDialog(`
-    <div class="dlg-head"><h3>${dish ? 'Блюдо' : 'Новое блюдо'}</h3>
+    <div class="dlg-head"><h3>${isEdit ? 'Блюдо' : 'Новое блюдо'}</h3>
       <button type="button" class="dlg-close" data-action="dlg-close">✕</button></div>
     <div class="dlg-body">
       <label>Название <input id="dishName" value="${esc(dishDraft.name)}" placeholder="например: плов"></label>
@@ -287,7 +295,7 @@ function showDishDialog(dish) {
 
       <div id="dishTotals" class="dish-totals"></div>
       <button type="button" class="btn primary" data-action="save-dish">Сохранить блюдо</button>
-      ${dish ? `<button type="button" class="btn danger" data-action="delete-dish" data-id="${dish.id}">Удалить блюдо</button>` : ''}
+      ${isEdit ? `<button type="button" class="btn danger" data-action="delete-dish" data-id="${dishDraft.id}">Удалить блюдо</button>` : ''}
     </div>`);
 
   renderDishComponents();
@@ -302,14 +310,36 @@ function showDishDialog(dish) {
 function renderDishPickList(query) {
   const el = dlg.querySelector('#dishPickList');
   const q = query.trim().toLowerCase();
+  const trimmed = query.trim();
   // без запроса список не показываем — иначе он занимает пол-экрана и мешает
   // добраться до кнопок; появляется только по мере ввода
   if (!q) { el.innerHTML = ''; return; }
   const list = state.products.filter(p => p.name.toLowerCase().includes(q)).slice(0, 8);
-  el.innerHTML = list.length
-    ? list.map(p => `<button type="button" class="pick" data-action="dish-add-product" data-id="${p.id}">
-        ${esc(p.name)}<span class="pick-sub">${fmt(unitPer(p).kcal)} ккал/${qtyUnit(productUnit(p))}</span></button>`).join('')
-    : '<p class="empty">Не найдено.</p>';
+  const picks = list.map(p => `<button type="button" class="pick" data-action="dish-add-product" data-id="${p.id}">
+      ${esc(p.name)}<span class="pick-sub">${fmt(unitPer(p).kcal)} ккал/${qtyUnit(productUnit(p))}</span></button>`).join('');
+  // нужного продукта может не быть — даём создать новый прямо здесь
+  const createBtns = `
+    <button type="button" class="btn ai-btn" data-action="dish-lookup-product" data-query="${esc(trimmed)}">🔎 Найти «${esc(trimmed)}» через ИИ</button>
+    <button type="button" class="btn" data-action="dish-new-product" data-query="${esc(trimmed)}">➕ Создать «${esc(trimmed)}» вручную</button>`;
+  el.innerHTML = (list.length ? picks : '<p class="empty">В базе не найдено.</p>') + createBtns;
+}
+
+// Добавляет продукт в черновик блюда: приводит к «на 100 г», добавляет строку
+// с ПУСТОЙ граммовкой и ставит курсор в неё.
+function addProductToDishDraft(p) {
+  const per100 = productPer100(p);
+  if (!per100) {
+    toast('У продукта «на 1 шт» не задан вес штуки — укажи его в карточке, чтобы добавить в блюдо');
+    return false;
+  }
+  dishDraft.components.push({
+    productId: p.id, name: p.name, grams: '',
+    per100, plantPercent: p.plantPercent || 0,
+  });
+  renderDishComponents();
+  const inputs = dlg.querySelectorAll('[data-dish-grams]');
+  inputs[inputs.length - 1]?.focus();
+  return true;
 }
 
 function renderDishComponents() {
@@ -554,7 +584,9 @@ function renderSettings() {
 
 function showDialog(html) {
   dlg.innerHTML = html;
-  dlg.showModal();
+  // если диалог уже открыт (например, вернулись из карточки продукта в
+  // конструктор блюда) — просто подменяем содержимое, повторный showModal бросает
+  if (!dlg.open) dlg.showModal();
 }
 
 // Переключатель единицы (на 100 г / на 1 шт) + скрытое поле unit.
@@ -829,8 +861,15 @@ function showProductDialog(product, prefill) {
     if (u === 'pcs') { rec.perPiece = vals; rec.pieceGrams = num(f.get('pieceGrams')) || null; }
     else { rec.per100 = vals; }
     await db.put('products', rec);
-    dlg.close();
     await refreshProducts();
+    // если продукт создавали ради блюда — вернуться в конструктор и добавить его
+    if (afterProductSave) {
+      const cb = afterProductSave;
+      afterProductSave = null;
+      cb(rec);
+      return;
+    }
+    dlg.close();
     render();
   });
 }
@@ -866,24 +905,29 @@ async function runRecognition() {
 
 // Из вкладки «Продукты»: находим и открываем карточку нового продукта
 // с заполненными значениями — пользователь правит и сохраняет локально.
+// Строит заготовку карточки продукта из ответа ai.lookupFood.
+function prefillFromLookup(data, query) {
+  const per = data.per || {};
+  const vals = { kcal: per.kcal ?? '', protein: per.protein ?? 0, fiber: per.fiber ?? 0 };
+  const prefill = {
+    name: data.name || query,
+    plantPercent: Math.max(0, Math.min(100, Math.round(data.plantPercent || 0))),
+  };
+  if (data.unit === 'pcs') {
+    prefill.unit = 'pcs';
+    prefill.perPiece = vals;
+    prefill.pieceGrams = data.pieceGrams || null;
+  } else {
+    prefill.per100 = vals;
+  }
+  return prefill;
+}
+
 async function lookupProduct(query, btn) {
   if (btn) { btn.disabled = true; btn.textContent = 'Ищу…'; }
   try {
     const data = await ai.lookupFood(query);
-    const per = data.per || {};
-    const vals = { kcal: per.kcal ?? '', protein: per.protein ?? 0, fiber: per.fiber ?? 0 };
-    const prefill = {
-      name: data.name || query,
-      plantPercent: Math.max(0, Math.min(100, Math.round(data.plantPercent || 0))),
-    };
-    if (data.unit === 'pcs') {
-      prefill.unit = 'pcs';
-      prefill.perPiece = vals;
-      prefill.pieceGrams = data.pieceGrams || null;
-    } else {
-      prefill.per100 = vals;
-    }
-    showProductDialog(null, prefill);
+    showProductDialog(null, prefillFromLookup(data, query));
     if (data.notes) toast(data.notes);
   } catch (err) {
     if (btn) { btn.disabled = false; btn.textContent = '🔎 Найти через ИИ и добавить'; }
@@ -1148,22 +1192,26 @@ document.body.addEventListener('click', async ev => {
     if (d) showDishDialog(d);
   } else if (action === 'dish-add-product') {
     const p = state.products.find(x => x.id === id);
-    if (p) {
-      // блюда всегда граммовые: штучный продукт приводим к «на 100 г» по весу
-      // 1 шт; если вес не задан — добавить нельзя
-      const per100 = productPer100(p);
-      if (!per100) {
-        toast('У продукта «на 1 шт» не задан вес штуки — укажи его в карточке, чтобы добавить в блюдо');
-      } else {
-        dishDraft.components.push({
-          productId: p.id, name: p.name, grams: 100,
-          per100, plantPercent: p.plantPercent || 0,
-        });
-        renderDishComponents();
-        const s = dlg.querySelector('#dishProductSearch');
-        s.value = '';
-        renderDishPickList('');
-      }
+    if (p && addProductToDishDraft(p)) {
+      const s = dlg.querySelector('#dishProductSearch');
+      s.value = '';
+      renderDishPickList('');
+    }
+  } else if (action === 'dish-new-product') {
+    // создать новый продукт вручную и по сохранении добавить его в блюдо
+    afterProductSave = product => { showDishDialog(null, true); addProductToDishDraft(product); };
+    showProductDialog(null, { name: el.dataset.query, per100: { kcal: '', protein: 0, fiber: 0 }, plantPercent: 0 });
+  } else if (action === 'dish-lookup-product') {
+    const query = el.dataset.query;
+    el.disabled = true; el.textContent = 'Ищу…';
+    try {
+      const data = await ai.lookupFood(query);
+      afterProductSave = product => { showDishDialog(null, true); addProductToDishDraft(product); };
+      showProductDialog(null, prefillFromLookup(data, query));
+      if (data.notes) toast(data.notes);
+    } catch (err) {
+      el.disabled = false; el.textContent = `🔎 Найти «${query}» через ИИ`;
+      toast('Не нашлось: ' + err.message);
     }
   } else if (action === 'dish-del-component') {
     dishDraft.components.splice(Number(el.dataset.index), 1);
@@ -1227,6 +1275,10 @@ document.body.addEventListener('click', async ev => {
 dlg.addEventListener('click', ev => {
   if (ev.target === dlg) dlg.close();
 });
+
+// при закрытии диалога (отмена/Esc/подложка) сбрасываем ожидающий колбэк,
+// чтобы он не сработал при следующем сохранении продукта
+dlg.addEventListener('close', () => { afterProductSave = null; });
 
 // правка граммовок в составе блюда — без перерисовки строки, чтобы не терять
 // фокус; обновляем только черновик и итоги
