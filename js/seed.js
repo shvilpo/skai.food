@@ -3,29 +3,44 @@ import * as db from './db.js';
 import { BASE_FOODS, SEED_VERSION } from './foods.js';
 
 // Синхронизирует встроенный справочник с базой пользователя.
-// При повышении SEED_VERSION:
-//  - удаляются продукты из прежнего справочника (source:'seed'), которых нет
-//    в новом списке, ЕСЛИ пользователь их не трогал (не редактировал и ни
-//    разу не записывал) — так из базы уходят устаревшие позиции;
-//  - добавляются новые позиции, которых ещё нет (сверка по названию).
-// Отредактированные (edited:true), использованные (usedCount>0) и собственные
-// (source!=='seed') продукты не трогаются никогда.
+// При повышении SEED_VERSION для НЕТРОНУТЫХ seed-продуктов (source:'seed',
+// не edited):
+//  - если позиция есть в новом справочнике — обновляем её значения (КБЖУ,
+//    растительную долю) до актуальных, сохраняя id/usedCount/createdAt;
+//  - если позиции больше нет в справочнике и она не использовалась — удаляем;
+//  - недостающие позиции добавляем.
+// Отредактированные (edited:true) и собственные (source!=='seed') продукты не
+// трогаются никогда; значения обновляются только у нетронутого сева.
 export async function ensureSeed() {
   const rec = await db.get('settings', 'seedVersion');
   // 'seeded' — флаг самой первой версии, до появления seedVersion
   const current = rec?.value ?? ((await db.get('settings', 'seeded')) ? 1 : 0);
   if (current >= SEED_VERSION) return;
 
+  const seedByName = new Map(BASE_FOODS.map(f => [f[0].trim().toLowerCase(), f]));
   const existing = await db.getAll('products');
-  const wanted = new Set(BASE_FOODS.map(f => f[0].trim().toLowerCase()));
-  const present = new Set(existing.map(p => p.name.trim().toLowerCase()));
+  const present = new Set();
 
-  // Убираем устаревшие нетронутые seed-продукты.
   for (const p of existing) {
     const key = p.name.trim().toLowerCase();
-    if (p.source === 'seed' && !p.edited && (p.usedCount || 0) === 0 && !wanted.has(key)) {
-      await db.del('products', p.id);
-      present.delete(key);
+    if (p.source === 'seed' && !p.edited) {
+      const seed = seedByName.get(key);
+      if (!seed) {
+        // устаревшая нетронутая позиция: убираем, если не использовалась
+        if ((p.usedCount || 0) === 0) { await db.del('products', p.id); continue; }
+        present.add(key); // использовалась — оставляем как есть
+        continue;
+      }
+      // обновляем значения нетронутого сева до актуального каталога
+      p.per100 = { kcal: seed[1], protein: seed[2], fiber: seed[3] };
+      p.plantPercent = seed[4];
+      p.unit = 'g';
+      delete p.perPiece;
+      delete p.pieceGrams;
+      await db.put('products', p);
+      present.add(key);
+    } else {
+      present.add(key); // edited или собственный — не трогаем
     }
   }
 
@@ -37,6 +52,7 @@ export async function ensureSeed() {
       name,
       per100: { kcal, protein, fiber },
       plantPercent,
+      unit: 'g',
       source: 'seed',
       usedCount: 0,
       createdAt: Date.now(),

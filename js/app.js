@@ -609,7 +609,8 @@ function nutritionFieldsetHTML(unit, per, pieceGrams, plantPercent) {
       <label>Клетчатка, г <input name="fiber" type="number" inputmode="decimal" step="any" value="${per.fiber ?? 0}"></label>
       <label class="piece-grams-row" ${pcs ? '' : 'hidden'}>Вес 1 шт, г <span class="note-inline">(для растит. массы, необязательно)</span>
         <input name="pieceGrams" type="number" inputmode="decimal" step="any" value="${pieceGrams ?? ''}"></label>
-      <label>Растительная доля, % <input name="plantPercent" type="number" inputmode="numeric" min="0" max="100" value="${plantPercent || 0}"></label>
+      <label>Растительная доля, % <span class="note-inline">(цельная растит. пища: овощи, фрукты, бобовые, орехи, зелень, грибы; без круп, картофеля, муки и переработанного)</span>
+        <input name="plantPercent" type="number" inputmode="numeric" min="0" max="100" value="${plantPercent || 0}"></label>
     </fieldset>`;
 }
 
