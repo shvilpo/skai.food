@@ -122,6 +122,18 @@ function unitName(u) { return u === 'pcs' ? '1 шт' : '100 г'; }   // для �
 function qtyUnit(u) { return u === 'pcs' ? 'шт' : 'г'; }          // для «съедено …»
 
 function entryNutrients(e) {
+  // Запись-блюдо: хранит снимок КБЖУ целого блюда (100%) и долю в процентах.
+  if (e.unit === 'dish') {
+    const f = (e.percent || 0) / 100;
+    const d = e.dishFull || {};
+    return {
+      kcal: (d.kcal || 0) * f,
+      protein: (d.protein || 0) * f,
+      fiber: (d.fiber || 0) * f,
+      calcium: (d.calcium || 0) * f,
+      plant: (d.plant || 0) * f,
+    };
+  }
   if (e.unit === 'pcs') {
     const n = e.pieces || 0;
     const pp = e.perPiece || {};
@@ -194,13 +206,19 @@ function renderDiary() {
   const isToday = state.date === todayStr();
   const rows = state.entries.map(e => {
     const n = entryNutrients(e);
-    const qty = e.unit === 'pcs' ? `${fmt(e.pieces, 2)} шт` : `${fmt(e.grams, 1)} г`;
+    const isDish = e.unit === 'dish';
+    const qty = isDish ? `${fmt(e.percent, 0)}%`
+      : e.unit === 'pcs' ? `${fmt(e.pieces, 2)} шт`
+      : `${fmt(e.grams, 1)} г`;
+    const gramsNote = isDish
+      ? `≈ ${fmt((e.dishFull?.grams || 0) * (e.percent || 0) / 100)} г · `
+      : '';
     return `<button class="entry" data-action="edit-entry" data-id="${e.id}">
       <div class="entry-main">
-        <span class="entry-name">${e.fromDish ? '🍲 ' : ''}${esc(e.name)}</span>
+        <span class="entry-name">${isDish || e.fromDish ? '🍲 ' : ''}${esc(e.name)}</span>
         <span class="entry-grams">${qty}</span>
       </div>
-      <div class="entry-sub">${fmt(n.kcal)} ккал · Б ${fmt(n.protein, 1)} · Кл ${fmt(n.fiber, 1)} · Раст ${fmt(n.plant)} · Ca ${fmt(n.calcium)}${e.fromDish ? ` · из: ${esc(e.fromDish)}` : ''}</div>
+      <div class="entry-sub">${gramsNote}${fmt(n.kcal)} ккал · Б ${fmt(n.protein, 1)} · Кл ${fmt(n.fiber, 1)} · Раст ${fmt(n.plant)} · Ca ${fmt(n.calcium)}${!isDish && e.fromDish ? ` · из: ${esc(e.fromDish)}` : ''}</div>
     </button>`;
   }).join('');
 
@@ -280,7 +298,7 @@ function renderDishes() {
 
   view.innerHTML = `
     <h2 class="section-title">Свои блюда</h2>
-    <p class="note">Блюдо — состав из сырых продуктов с граммовками. В дневник добавляется по проценту от приготовленного блюда: каждый ингредиент попадёт построчно в этой доле.</p>
+    <p class="note">Блюдо — состав из сырых продуктов с граммовками. В дневник добавляется одной записью с долей в процентах от приготовленного блюда; долю можно поменять позже — нутриенты пересчитаются.</p>
     <div class="entries">${rows || '<p class="empty">Пока нет блюд. Создай первое кнопкой ниже.</p>'}</div>
     <button class="fab" data-action="add-dish">+ Блюдо</button>`;
 }
@@ -455,15 +473,14 @@ function showDishDetail(dish) {
 }
 
 async function addDishToDiary(dish, percent) {
-  const frac = Math.max(0, num(percent)) / 100;
-  if (frac <= 0) { toast('Укажи процент больше нуля'); return; }
+  const pct = Math.max(0, num(percent));
+  if (pct <= 0) { toast('Укажи процент больше нуля'); return; }
   const fullName = dishFullName(dish);
-  let count = 0;
+
+  // Заполняем кальций по компонентам (из карточек продуктов, при необходимости
+  // дозапрашиваем у ИИ) перед подсчётом снимка целого блюда.
+  const comps = [];
   for (const c of dish.components || []) {
-    const grams = num(c.grams) * frac;
-    if (grams <= 0) continue;
-    // внесение в рацион — проверяем кальций: если в снимке его нет, берём из
-    // карточки продукта (при необходимости дозапрашиваем)
     const per100 = { ...c.per100 };
     if (per100.calcium == null && c.productId) {
       let prod = state.products.find(x => x.id === c.productId);
@@ -473,19 +490,26 @@ async function addDishToDiary(dish, percent) {
         if (p100 && p100.calcium != null) per100.calcium = p100.calcium;
       }
     }
-    await db.put('entries', {
-      id: uid(), date: state.date, ts: Date.now() + count,
-      productId: c.productId || null, name: c.name, grams,
-      per100, plantPercent: c.plantPercent || 0,
-      source: 'dish', fromDish: fullName, dishId: dish.id,
-    });
-    count++;
+    comps.push({ ...c, per100 });
   }
+
+  // Снимок КБЖУ всего блюда (100%). Запись хранит его + долю в процентах,
+  // поэтому долю можно потом поменять — нутриенты пересчитаются.
+  const full = dishTotals(comps);
+  await db.put('entries', {
+    id: uid(), date: state.date, ts: Date.now(),
+    name: fullName, unit: 'dish',
+    percent: pct, dishFull: full,
+    // grams держим в синхроне с процентом — на нём считается «съедено %»
+    grams: full.grams * pct / 100,
+    source: 'dish', fromDish: fullName, dishId: dish.id,
+  });
+
   dlg.close();
   await refreshEntries();
   await refreshDishes(); // пересчитать «съедено %»
   render();
-  toast(`Добавлено из блюда: ${count} ${count === 1 ? 'позиция' : 'позиц.'}`);
+  toast(`Блюдо добавлено: ${fmt(pct)}%`);
 }
 
 // Живое превью порции в режиме «Блюдо» диалога добавления записи.
@@ -872,21 +896,39 @@ function showEntryDialog() {
 }
 
 function showEditEntryDialog(entry) {
-  const pcs = entry.unit === 'pcs';
-  const cur = pcs ? entry.pieces : entry.grams;
+  const kind = entry.unit === 'pcs' ? 'pcs' : entry.unit === 'dish' ? 'dish' : 'g';
+  const label = kind === 'pcs' ? 'Съедено, шт'
+    : kind === 'dish' ? 'Количество блюда, %'
+    : 'Съедено, г';
+  const cur = kind === 'pcs' ? entry.pieces : kind === 'dish' ? entry.percent : entry.grams;
   showDialog(`
     <div class="dlg-head"><h3>${esc(entry.name)}</h3>
       <button type="button" class="dlg-close" data-action="dlg-close">✕</button></div>
     <form id="editEntryForm" class="dlg-body">
-      <label>Съедено, ${pcs ? 'шт' : 'г'} <input name="qty" type="number" inputmode="decimal" value="${cur}" min="0" step="any" required></label>
+      <label>${label} <input name="qty" type="number" inputmode="decimal" value="${cur}" min="0" step="any" required></label>
+      ${kind === 'dish' ? '<p class="note" id="editDishPreview"></p>' : ''}
       <button type="submit" class="btn primary">Сохранить</button>
       <button type="button" class="btn danger" data-action="delete-entry" data-id="${entry.id}">Удалить запись</button>
     </form>`);
 
+  if (kind === 'dish') {
+    const input = dlg.querySelector('[name="qty"]');
+    const preview = dlg.querySelector('#editDishPreview');
+    const d = entry.dishFull || {};
+    const upd = () => {
+      const f = Math.max(0, num(input.value)) / 100;
+      preview.textContent = `≈ ${fmt((d.grams || 0) * f, 1)} г · ${fmt((d.kcal || 0) * f)} ккал · Б ${fmt((d.protein || 0) * f, 1)} · Кл ${fmt((d.fiber || 0) * f, 1)} · Раст ${fmt((d.plant || 0) * f)} · Ca ${fmt((d.calcium || 0) * f)}`;
+    };
+    input.addEventListener('input', upd);
+    upd();
+  }
+
   dlg.querySelector('#editEntryForm').addEventListener('submit', async ev => {
     ev.preventDefault();
     const q = num(new FormData(ev.target).get('qty'), cur);
-    if (pcs) entry.pieces = q; else entry.grams = q;
+    if (kind === 'pcs') entry.pieces = q;
+    else if (kind === 'dish') { entry.percent = q; entry.grams = (entry.dishFull?.grams || 0) * q / 100; }
+    else entry.grams = q;
     await db.put('entries', entry);
     dlg.close();
     await refreshEntries();
