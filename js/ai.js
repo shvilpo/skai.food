@@ -176,6 +176,9 @@ async function callAnthropic(prompt, schema, imageB64, apiKey) {
       body: JSON.stringify({
         model: getModel('anthropic'),
         max_tokens: 2048,
+        // temperature: 0 — детерминированный ответ: один и тот же запрос
+        // даёт одни и те же КБЖУ/кальций, без разброса между вызовами.
+        temperature: 0,
         output_config: { format: { type: 'json_schema', schema } },
         messages: [{ role: 'user', content }],
       }),
@@ -203,6 +206,8 @@ async function callOpenRouter(prompt, schema, imageB64, apiKey, withFormat = tru
   const body = {
     model: getModel('openrouter'),
     max_tokens: 2048,
+    // temperature: 0 — детерминированный ответ без разброса между вызовами.
+    temperature: 0,
     messages: [{ role: 'user', content }],
   };
   if (withFormat) {

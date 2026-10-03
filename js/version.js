@@ -2,4 +2,4 @@
 // Используется и в интерфейсе (Настройки), и в имени кэша service worker.
 // Работает и как классический скрипт (importScripts в sw.js, <script> в
 // index.html), и читается из модулей через self.APP_VERSION.
-self.APP_VERSION = 'v17';
+self.APP_VERSION = 'v18';
