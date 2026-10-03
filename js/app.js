@@ -113,6 +113,11 @@ function hasCalcium(p) {
   const per = unitPer(p);
   return per && per.calcium != null;
 }
+// Поиск продукта в базе по названию (без регистра) — чтобы не плодить дубли.
+function findProductByName(name) {
+  const key = String(name).trim().toLowerCase();
+  return state.products.find(p => p.name.trim().toLowerCase() === key);
+}
 function unitName(u) { return u === 'pcs' ? '1 шт' : '100 г'; }   // для «на …»
 function qtyUnit(u) { return u === 'pcs' ? 'шт' : 'г'; }          // для «съедено …»
 
@@ -457,10 +462,21 @@ async function addDishToDiary(dish, percent) {
   for (const c of dish.components || []) {
     const grams = num(c.grams) * frac;
     if (grams <= 0) continue;
+    // внесение в рацион — проверяем кальций: если в снимке его нет, берём из
+    // карточки продукта (при необходимости дозапрашиваем)
+    const per100 = { ...c.per100 };
+    if (per100.calcium == null && c.productId) {
+      let prod = state.products.find(x => x.id === c.productId);
+      if (prod) {
+        if (!hasCalcium(prod) && ai.getApiKey()) prod = await ensureProductCalcium(prod);
+        const p100 = productPer100(prod);
+        if (p100 && p100.calcium != null) per100.calcium = p100.calcium;
+      }
+    }
     await db.put('entries', {
       id: uid(), date: state.date, ts: Date.now() + count,
       productId: c.productId || null, name: c.name, grams,
-      per100: { ...c.per100 }, plantPercent: c.plantPercent || 0,
+      per100, plantPercent: c.plantPercent || 0,
       source: 'dish', fromDish: fullName, dishId: dish.id,
     });
     count++;
@@ -830,8 +846,15 @@ function showEntryDialog() {
 
     let productId = null;
     if (f.get('saveToBase')) {
-      productId = uid();
-      const prod = { id: productId, name, unit, plantPercent, source: 'manual', edited: true, usedCount: 1, createdAt: Date.now() };
+      // если продукт с таким названием уже есть — обновляем его, а не плодим дубль
+      const existing = findProductByName(name);
+      productId = existing ? existing.id : uid();
+      const prod = {
+        id: productId, name, unit, plantPercent, edited: true,
+        source: existing ? existing.source : 'manual',
+        usedCount: existing ? ((existing.usedCount || 0) + 1) : 1,
+        createdAt: existing ? existing.createdAt : Date.now(),
+      };
       if (unit === 'pcs') { prod.perPiece = { ...vals }; prod.pieceGrams = pieceGrams; }
       else { prod.per100 = { ...vals }; }
       await db.put('products', prod);
@@ -922,6 +945,18 @@ function showProductDialog(product, prefill) {
     };
     if (u === 'pcs') { rec.perPiece = vals; rec.pieceGrams = num(f.get('pieceGrams')) || null; }
     else { rec.per100 = vals; }
+    // новый продукт с уже существующим названием — обновляем существующий,
+    // чтобы не плодить дубли
+    if (!product) {
+      const existing = findProductByName(name);
+      if (existing) {
+        rec.id = existing.id;
+        rec.source = existing.source;
+        rec.usedCount = existing.usedCount || 0;
+        rec.createdAt = existing.createdAt;
+        toast(`Обновлён продукт «${name}» — он уже был в базе`);
+      }
+    }
     await db.put('products', rec);
     await refreshProducts();
     // если продукт создавали ради блюда — вернуться в конструктор и добавить его
