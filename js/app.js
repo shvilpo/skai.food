@@ -3,7 +3,7 @@ import * as db from './db.js';
 import { ensureSeed } from './seed.js';
 import * as ai from './ai.js';
 
-const DEFAULT_TARGETS = { kcal: 2000, protein: 100, fiber: 30, plant: 400 };
+const DEFAULT_TARGETS = { kcal: 2000, protein: 100, fiber: 30, plant: 400, calcium: 1000 };
 
 const state = {
   tab: 'diary',
@@ -29,6 +29,8 @@ let entryDishId = null;
 // колбэк после сохранения продукта (например, вернуться в конструктор блюда
 // и добавить только что созданный продукт в состав)
 let afterProductSave = null;
+// id продуктов, для которых прямо сейчас дозапрашивается кальций (от дублей)
+const calciumInFlight = new Set();
 
 // ---------- данные ----------
 
@@ -79,7 +81,7 @@ function dishFullName(d) {
 
 // Масса и КБЖУ блюда целиком (по сырым ингредиентам).
 function dishTotals(components) {
-  const t = { grams: 0, kcal: 0, protein: 0, fiber: 0, plant: 0 };
+  const t = { grams: 0, kcal: 0, protein: 0, fiber: 0, plant: 0, calcium: 0 };
   for (const c of components) {
     const g = num(c.grams);
     const k = g / 100;
@@ -87,6 +89,7 @@ function dishTotals(components) {
     t.kcal += (c.per100?.kcal || 0) * k;
     t.protein += (c.per100?.protein || 0) * k;
     t.fiber += (c.per100?.fiber || 0) * k;
+    t.calcium += (c.per100?.calcium || 0) * k;
     t.plant += g * (c.plantPercent || 0) / 100;
   }
   return t;
@@ -105,6 +108,11 @@ function unitPer(p) {
     ? (p.perPiece || { kcal: 0, protein: 0, fiber: 0 })
     : (p.per100 || { kcal: 0, protein: 0, fiber: 0 });
 }
+// Известен ли кальций продукта (чтобы при внесении в рацион дозапросить у ИИ).
+function hasCalcium(p) {
+  const per = unitPer(p);
+  return per && per.calcium != null;
+}
 function unitName(u) { return u === 'pcs' ? '1 шт' : '100 г'; }   // для «на …»
 function qtyUnit(u) { return u === 'pcs' ? 'шт' : 'г'; }          // для «съедено …»
 
@@ -116,6 +124,7 @@ function entryNutrients(e) {
       kcal: (pp.kcal || 0) * n,
       protein: (pp.protein || 0) * n,
       fiber: (pp.fiber || 0) * n,
+      calcium: (pp.calcium || 0) * n,
       // растительная масса штучного продукта считается только если задан вес 1 шт
       plant: n * (e.pieceGrams || 0) * (e.plantPercent || 0) / 100,
     };
@@ -126,6 +135,7 @@ function entryNutrients(e) {
     kcal: (per.kcal || 0) * k,
     protein: (per.protein || 0) * k,
     fiber: (per.fiber || 0) * k,
+    calcium: (per.calcium || 0) * k,
     plant: (e.grams || 0) * (e.plantPercent || 0) / 100,
   };
 }
@@ -138,14 +148,16 @@ function productPer100(p) {
   if (g <= 0) return null;
   const f = 100 / g;
   const pp = p.perPiece || {};
-  return { kcal: (pp.kcal || 0) * f, protein: (pp.protein || 0) * f, fiber: (pp.fiber || 0) * f };
+  const per = { kcal: (pp.kcal || 0) * f, protein: (pp.protein || 0) * f, fiber: (pp.fiber || 0) * f };
+  if (pp.calcium != null) per.calcium = pp.calcium * f;
+  return per;
 }
 
 function totals(entries) {
-  const t = { kcal: 0, protein: 0, fiber: 0, plant: 0 };
+  const t = { kcal: 0, protein: 0, fiber: 0, plant: 0, calcium: 0 };
   for (const e of entries) {
     const n = entryNutrients(e);
-    t.kcal += n.kcal; t.protein += n.protein; t.fiber += n.fiber; t.plant += n.plant;
+    t.kcal += n.kcal; t.protein += n.protein; t.fiber += n.fiber; t.plant += n.plant; t.calcium += n.calcium;
   }
   return t;
 }
@@ -183,7 +195,7 @@ function renderDiary() {
         <span class="entry-name">${e.fromDish ? '🍲 ' : ''}${esc(e.name)}</span>
         <span class="entry-grams">${qty}</span>
       </div>
-      <div class="entry-sub">${fmt(n.kcal)} ккал · Б ${fmt(n.protein, 1)} · Кл ${fmt(n.fiber, 1)} · Раст ${fmt(n.plant)}${e.fromDish ? ` · из: ${esc(e.fromDish)}` : ''}</div>
+      <div class="entry-sub">${fmt(n.kcal)} ккал · Б ${fmt(n.protein, 1)} · Кл ${fmt(n.fiber, 1)} · Раст ${fmt(n.plant)} · Ca ${fmt(n.calcium)}${e.fromDish ? ` · из: ${esc(e.fromDish)}` : ''}</div>
     </button>`;
   }).join('');
 
@@ -198,6 +210,7 @@ function renderDiary() {
       ${metricTile('Белок', t.protein, state.targets.protein, 'г', 1)}
       ${metricTile('Растительное', t.plant, state.targets.plant, 'г')}
       ${metricTile('Клетчатка', t.fiber, state.targets.fiber, 'г', 1)}
+      ${metricTile('Кальций', t.calcium, state.targets.calcium, 'мг')}
     </div>
     <div class="entries">${rows || '<p class="empty">Пока ничего не записано.</p>'}</div>
     <button class="fab" data-action="add-entry">+ Добавить</button>`;
@@ -221,7 +234,7 @@ function productListInner(query) {
           <span class="entry-name">${esc(p.name)}${u === 'pcs' ? ' <span class="unit-badge">шт</span>' : ''}</span>
           ${p.plantPercent ? '<span class="leaf">🌿</span>' : ''}
         </div>
-        <div class="entry-sub">на ${unitName(u)}: ${fmt(per.kcal)} ккал · Б ${fmt(per.protein, 1)} · Кл ${fmt(per.fiber, 1)}</div>
+        <div class="entry-sub">на ${unitName(u)}: ${fmt(per.kcal)} ккал · Б ${fmt(per.protein, 1)} · Кл ${fmt(per.fiber, 1)}${per.calcium != null ? ` · Ca ${fmt(per.calcium)}` : ''}</div>
       </button>`;
   }).join('');
   if (list.length) return rows + aiBtn;
@@ -332,13 +345,25 @@ function addProductToDishDraft(p) {
     toast('У продукта «на 1 шт» не задан вес штуки — укажи его в карточке, чтобы добавить в блюдо');
     return false;
   }
-  dishDraft.components.push({
+  const comp = {
     productId: p.id, name: p.name, grams: '',
     per100, plantPercent: p.plantPercent || 0,
-  });
+  };
+  dishDraft.components.push(comp);
   renderDishComponents();
   const inputs = dlg.querySelectorAll('[data-dish-grams]');
   inputs[inputs.length - 1]?.focus();
+
+  // продукт без кальция — дозапрашиваем в фоне и подтягиваем в состав
+  if (!hasCalcium(p) && ai.getApiKey()) {
+    ensureProductCalcium(p).then(updated => {
+      const freshPer = productPer100(updated);
+      if (freshPer && freshPer.calcium != null && dishDraft && dishDraft.components.includes(comp)) {
+        comp.per100 = { ...comp.per100, calcium: freshPer.calcium };
+        if (dlg.open && dlg.querySelector('#dishTotals')) updateDishTotals();
+      }
+    });
+  }
   return true;
 }
 
@@ -360,7 +385,7 @@ function renderDishComponents() {
 function updateDishTotals() {
   const t = dishTotals(dishDraft.components);
   dlg.querySelector('#dishTotals').innerHTML =
-    `Масса блюда: <b>${fmt(t.grams)} г</b> · ${fmt(t.kcal)} ккал · Б ${fmt(t.protein, 1)} · Кл ${fmt(t.fiber, 1)} · Раст ${fmt(t.plant)}`;
+    `Масса блюда: <b>${fmt(t.grams)} г</b> · ${fmt(t.kcal)} ккал · Б ${fmt(t.protein, 1)} · Кл ${fmt(t.fiber, 1)} · Раст ${fmt(t.plant)} · Ca ${fmt(t.calcium)}`;
 }
 
 async function saveDish() {
@@ -401,7 +426,7 @@ function showDishDetail(dish) {
     <div class="dlg-head"><h3>${esc(dishFullName(dish))}</h3>
       <button type="button" class="dlg-close" data-action="dlg-close">✕</button></div>
     <div class="dlg-body">
-      <div class="dish-totals">Масса блюда: <b>${fmt(t.grams)} г</b> · ${fmt(t.kcal)} ккал · Б ${fmt(t.protein, 1)} · Кл ${fmt(t.fiber, 1)}</div>
+      <div class="dish-totals">Масса блюда: <b>${fmt(t.grams)} г</b> · ${fmt(t.kcal)} ккал · Б ${fmt(t.protein, 1)} · Кл ${fmt(t.fiber, 1)} · Ca ${fmt(t.calcium)}</div>
       <div class="dish-detail-list">${comps}</div>
 
       <label>Съедено, % от блюда
@@ -418,7 +443,7 @@ function showDishDetail(dish) {
   const preview = dlg.querySelector('#dishPortionPreview');
   const update = () => {
     const p = Math.max(0, num(percentInput.value)) / 100;
-    preview.textContent = `≈ ${fmt(t.grams * p, 1)} г · ${fmt(t.kcal * p)} ккал · Б ${fmt(t.protein * p, 1)} · Кл ${fmt(t.fiber * p, 1)} · Раст ${fmt(t.plant * p)}`;
+    preview.textContent = `≈ ${fmt(t.grams * p, 1)} г · ${fmt(t.kcal * p)} ккал · Б ${fmt(t.protein * p, 1)} · Кл ${fmt(t.fiber * p, 1)} · Раст ${fmt(t.plant * p)} · Ca ${fmt(t.calcium * p)}`;
   };
   percentInput.addEventListener('input', update);
   update();
@@ -454,7 +479,7 @@ function updateDishEntryPreview() {
   if (!preview || !dish) return;
   const t = dishTotals(dish.components || []);
   const p = Math.max(0, num(dlg.querySelector('#dishEntryPercent').value)) / 100;
-  preview.textContent = `≈ ${fmt(t.grams * p, 1)} г · ${fmt(t.kcal * p)} ккал · Б ${fmt(t.protein * p, 1)} · Кл ${fmt(t.fiber * p, 1)} · Раст ${fmt(t.plant * p)}`;
+  preview.textContent = `≈ ${fmt(t.grams * p, 1)} г · ${fmt(t.kcal * p)} ккал · Б ${fmt(t.protein * p, 1)} · Кл ${fmt(t.fiber * p, 1)} · Раст ${fmt(t.plant * p)} · Ca ${fmt(t.calcium * p)}`;
 }
 
 async function renderStats() {
@@ -466,9 +491,9 @@ async function renderStats() {
     days.push({ date, t: totals(entries), n: entries.length });
   }
   const tracked = days.filter(d => d.n > 0);
-  const avg = { kcal: 0, protein: 0, fiber: 0, plant: 0 };
+  const avg = { kcal: 0, protein: 0, fiber: 0, plant: 0, calcium: 0 };
   for (const d of tracked) {
-    avg.kcal += d.t.kcal; avg.protein += d.t.protein; avg.fiber += d.t.fiber; avg.plant += d.t.plant;
+    avg.kcal += d.t.kcal; avg.protein += d.t.protein; avg.fiber += d.t.fiber; avg.plant += d.t.plant; avg.calcium += d.t.calcium;
   }
   const cnt = tracked.length || 1;
 
@@ -478,12 +503,13 @@ async function renderStats() {
     <td>${fmt(d.t.protein, 1)}</td>
     <td>${fmt(d.t.plant)}</td>
     <td>${fmt(d.t.fiber, 1)}</td>
+    <td>${fmt(d.t.calcium)}</td>
   </tr>`).join('');
 
   view.innerHTML = `
     <h2 class="section-title">Последние 7 дней</h2>
     <div class="table-wrap"><table>
-      <thead><tr><th>День</th><th>Ккал</th><th>Белок</th><th>Раст.</th><th>Клетч.</th></tr></thead>
+      <thead><tr><th>День</th><th>Ккал</th><th>Белок</th><th>Раст.</th><th>Клетч.</th><th>Ca, мг</th></tr></thead>
       <tbody>${rows}</tbody>
       <tfoot><tr>
         <td>Среднее*</td>
@@ -491,6 +517,7 @@ async function renderStats() {
         <td>${fmt(avg.protein / cnt, 1)}</td>
         <td>${fmt(avg.plant / cnt)}</td>
         <td>${fmt(avg.fiber / cnt, 1)}</td>
+        <td>${fmt(avg.calcium / cnt)}</td>
       </tr></tfoot>
     </table></div>
     <p class="note">* по дням, в которые велись записи (${tracked.length} из 7)</p>`;
@@ -505,6 +532,7 @@ function renderSettings() {
       <label>Белок, г <input name="protein" type="number" inputmode="numeric" value="${t.protein}"></label>
       <label>Растительная пища, г <input name="plant" type="number" inputmode="numeric" value="${t.plant}"></label>
       <label>Клетчатка, г <input name="fiber" type="number" inputmode="numeric" value="${t.fiber}"></label>
+      <label>Кальций, мг <input name="calcium" type="number" inputmode="numeric" value="${t.calcium}"></label>
       <button type="submit" class="btn primary">Сохранить цели</button>
     </form>
 
@@ -557,6 +585,7 @@ function renderSettings() {
       protein: num(f.get('protein'), DEFAULT_TARGETS.protein),
       plant: num(f.get('plant'), DEFAULT_TARGETS.plant),
       fiber: num(f.get('fiber'), DEFAULT_TARGETS.fiber),
+      calcium: num(f.get('calcium'), DEFAULT_TARGETS.calcium),
     };
     await db.put('settings', { key: 'targets', value: state.targets });
     toast('Цели сохранены');
@@ -607,11 +636,21 @@ function nutritionFieldsetHTML(unit, per, pieceGrams, plantPercent) {
       <label>Ккал <input name="kcal" type="number" inputmode="decimal" step="any" required value="${per.kcal ?? ''}"></label>
       <label>Белок, г <input name="protein" type="number" inputmode="decimal" step="any" value="${per.protein ?? 0}"></label>
       <label>Клетчатка, г <input name="fiber" type="number" inputmode="decimal" step="any" value="${per.fiber ?? 0}"></label>
+      <label>Кальций, мг <input name="calcium" type="number" inputmode="decimal" step="any" value="${per.calcium ?? ''}"></label>
       <label class="piece-grams-row" ${pcs ? '' : 'hidden'}>Вес 1 шт, г <span class="note-inline">(для растит. массы, необязательно)</span>
         <input name="pieceGrams" type="number" inputmode="decimal" step="any" value="${pieceGrams ?? ''}"></label>
       <label>Растительная доля, % <span class="note-inline">(цельная растит. пища: овощи, фрукты, бобовые, орехи, зелень, грибы; без круп, картофеля, муки и переработанного)</span>
         <input name="plantPercent" type="number" inputmode="numeric" min="0" max="100" value="${plantPercent || 0}"></label>
     </fieldset>`;
+}
+
+// КБЖУ из формы. Кальций добавляется только если поле заполнено — пустое
+// оставляет его неизвестным (undefined), чтобы сработал автодозапрос у ИИ.
+function readNutritionVals(f) {
+  const vals = { kcal: num(f.get('kcal')), protein: num(f.get('protein')), fiber: num(f.get('fiber')) };
+  const cal = String(f.get('calcium') ?? '').trim();
+  if (cal !== '') vals.calcium = num(cal);
+  return vals;
 }
 
 function productListHTML(query, selectedId) {
@@ -742,10 +781,20 @@ function showEntryDialog() {
   dlg.querySelector('#entryBaseForm').addEventListener('submit', async ev => {
     ev.preventDefault();
     const pid = dlg.querySelector('#pickedId').value;
-    const p = state.products.find(x => x.id === pid);
+    let p = state.products.find(x => x.id === pid);
     if (!p) { toast('Сначала выбери продукт из списка'); return; }
     const qty = num(dlg.querySelector('#baseGrams').value, 0);
     if (qty <= 0) return;
+
+    // продукт без данных о кальции — дозапрашиваем у ИИ и сохраняем в карточку
+    if (!hasCalcium(p) && ai.getApiKey()) {
+      const btn = ev.submitter || dlg.querySelector('#entryBaseForm [type="submit"]');
+      const label = btn && btn.textContent;
+      if (btn) { btn.disabled = true; btn.textContent = 'Уточняю кальций…'; }
+      p = await ensureProductCalcium(p);
+      if (btn) { btn.disabled = false; btn.textContent = label; }
+    }
+
     const entry = {
       id: uid(), date: state.date, ts: Date.now(),
       productId: p.id, name: p.name, plantPercent: p.plantPercent || 0,
@@ -775,7 +824,7 @@ function showEntryDialog() {
     const qty = num(f.get('qty'), 0);
     if (!name || qty <= 0) return;
     const unit = f.get('unit') === 'pcs' ? 'pcs' : 'g';
-    const vals = { kcal: num(f.get('kcal')), protein: num(f.get('protein')), fiber: num(f.get('fiber')) };
+    const vals = readNutritionVals(f);
     const plantPercent = Math.max(0, Math.min(100, num(f.get('plantPercent'))));
     const pieceGrams = unit === 'pcs' ? (num(f.get('pieceGrams')) || null) : null;
 
@@ -846,7 +895,7 @@ function showProductDialog(product, prefill) {
     const name = String(f.get('name')).trim();
     if (!name) return;
     const u = f.get('unit') === 'pcs' ? 'pcs' : 'g';
-    const vals = { kcal: num(f.get('kcal')), protein: num(f.get('protein')), fiber: num(f.get('fiber')) };
+    const vals = readNutritionVals(f);
     const rec = {
       id: product ? product.id : uid(),
       name,
@@ -906,10 +955,35 @@ async function runRecognition() {
 
 // Из вкладки «Продукты»: находим и открываем карточку нового продукта
 // с заполненными значениями — пользователь правит и сохраняет локально.
+// Дозапрашивает у ИИ кальций для продукта без этих данных и сохраняет его в
+// карточку (в per100 для «на 100 г» или perPiece для «на 1 шт»). Возвращает
+// обновлённый продукт; при отсутствии ключа или ошибке — исходный, молча.
+async function ensureProductCalcium(p) {
+  if (hasCalcium(p) || !ai.getApiKey() || calciumInFlight.has(p.id)) return p;
+  calciumInFlight.add(p.id);
+  try {
+    const data = await ai.lookupCalcium(p.name, productUnit(p));
+    // перечитываем продукт из базы (мог измениться), пишем кальций
+    const fresh = (await db.getAll('products')).find(x => x.id === p.id) || p;
+    const per = productUnit(fresh) === 'pcs'
+      ? (fresh.perPiece = fresh.perPiece || {})
+      : (fresh.per100 = fresh.per100 || {});
+    per.calcium = num(data.calcium);
+    await db.put('products', fresh);
+    await refreshProducts();
+    return (state.products.find(x => x.id === p.id)) || fresh;
+  } catch {
+    return p; // не вышло — тихо, кальций останется неизвестным
+  } finally {
+    calciumInFlight.delete(p.id);
+  }
+}
+
 // Строит заготовку карточки продукта из ответа ai.lookupFood.
 function prefillFromLookup(data, query) {
   const per = data.per || {};
   const vals = { kcal: per.kcal ?? '', protein: per.protein ?? 0, fiber: per.fiber ?? 0 };
+  if (per.calcium != null) vals.calcium = per.calcium;
   const prefill = {
     name: data.name || query,
     plantPercent: Math.max(0, Math.min(100, Math.round(data.plantPercent || 0))),
@@ -962,6 +1036,7 @@ function fillManualFromData(d) {
   form.elements.kcal.value = per.kcal ?? '';
   form.elements.protein.value = per.protein ?? 0;
   form.elements.fiber.value = per.fiber ?? 0;
+  if (form.elements.calcium) form.elements.calcium.value = per.calcium ?? '';
   if (form.elements.pieceGrams) form.elements.pieceGrams.value = d.pieceGrams ?? '';
   form.elements.plantPercent.value = Math.max(0, Math.min(100, Math.round(d.plantPercent || 0)));
   form.elements.qty.value = unit === 'pcs' ? 1 : 100;
@@ -1011,6 +1086,7 @@ async function savePlateItems() {
         kcal: num(it.per100.kcal),
         protein: num(it.per100.protein),
         fiber: num(it.per100.fiber),
+        calcium: num(it.per100.calcium),
       },
       plantPercent: Math.max(0, Math.min(100, num(it.plantPercent))),
       source: 'photo',

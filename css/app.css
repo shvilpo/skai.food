@@ -96,10 +96,13 @@ body {
 
 .tiles {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* 6 колонок: 1-я строка — 2 плашки по 3 кол., 2-я строка — 3 плашки по 2 кол. */
+  grid-template-columns: repeat(6, 1fr);
   gap: 10px;
   margin-bottom: 16px;
 }
+.tiles .tile:nth-child(1), .tiles .tile:nth-child(2) { grid-column: span 3; }
+.tiles .tile:nth-child(n+3) { grid-column: span 2; }
 .tile {
   background: var(--card);
   border: 1px solid var(--border);

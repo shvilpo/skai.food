@@ -31,8 +31,11 @@ export async function ensureSeed() {
         present.add(key); // использовалась — оставляем как есть
         continue;
       }
-      // обновляем значения нетронутого сева до актуального каталога
+      // обновляем значения нетронутого сева до актуального каталога,
+      // сохраняя дозапрошенный ранее кальций (его нет в каталоге)
+      const keepCalcium = p.per100 && p.per100.calcium;
       p.per100 = { kcal: seed[1], protein: seed[2], fiber: seed[3] };
+      if (keepCalcium != null) p.per100.calcium = keepCalcium;
       p.plantPercent = seed[4];
       p.unit = 'g';
       delete p.perPiece;
