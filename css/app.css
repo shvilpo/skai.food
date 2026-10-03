@@ -98,7 +98,7 @@ body {
   display: grid;
   /* 6 колонок: 1-я строка — 2 плашки по 3 кол., 2-я строка — 3 плашки по 2 кол. */
   grid-template-columns: repeat(6, 1fr);
-  gap: 10px;
+  gap: 6px;
   margin-bottom: 16px;
 }
 .tiles .tile:nth-child(1), .tiles .tile:nth-child(2) { grid-column: span 3; }

@@ -31,11 +31,13 @@ export async function ensureSeed() {
         present.add(key); // использовалась — оставляем как есть
         continue;
       }
-      // обновляем значения нетронутого сева до актуального каталога,
-      // сохраняя дозапрошенный ранее кальций (его нет в каталоге)
+      // обновляем значения нетронутого сева до актуального каталога.
+      // кальций берём из каталога; если в каталоге его нет (старый формат),
+      // сохраняем ранее дозапрошенный
       const keepCalcium = p.per100 && p.per100.calcium;
       p.per100 = { kcal: seed[1], protein: seed[2], fiber: seed[3] };
-      if (keepCalcium != null) p.per100.calcium = keepCalcium;
+      if (seed[5] != null) p.per100.calcium = seed[5];
+      else if (keepCalcium != null) p.per100.calcium = keepCalcium;
       p.plantPercent = seed[4];
       p.unit = 'g';
       delete p.perPiece;
@@ -48,12 +50,14 @@ export async function ensureSeed() {
   }
 
   // Досыпаем недостающие.
-  for (const [name, kcal, protein, fiber, plantPercent] of BASE_FOODS) {
+  for (const [name, kcal, protein, fiber, plantPercent, calcium] of BASE_FOODS) {
     if (present.has(name.trim().toLowerCase())) continue;
+    const per100 = { kcal, protein, fiber };
+    if (calcium != null) per100.calcium = calcium;
     await db.put('products', {
       id: uid(),
       name,
-      per100: { kcal, protein, fiber },
+      per100,
       plantPercent,
       unit: 'g',
       source: 'seed',

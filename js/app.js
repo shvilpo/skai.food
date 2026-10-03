@@ -889,6 +889,18 @@ function showProductDialog(product, prefill) {
       ${product ? `<button type="button" class="btn danger" data-action="delete-product" data-id="${product.id}">Удалить продукт</button>` : ''}
     </form>`);
 
+  // существующий продукт без кальция — подгружаем его и пересчитываем рацион;
+  // если кальций известен, но записи рациона без него — тоже синхронизируем
+  if (product && ai.getApiKey()) {
+    (async () => {
+      const updated = await syncProductCalciumToRation(product);
+      const field = dlg.querySelector('#productForm input[name="calcium"]');
+      const cal = unitPer(updated).calcium;
+      // подставим подгруженное только если поле ещё пустое (не затираем правку)
+      if (field && field.value.trim() === '' && cal != null) field.value = cal;
+    })();
+  }
+
   dlg.querySelector('#productForm').addEventListener('submit', async ev => {
     ev.preventDefault();
     const f = new FormData(ev.target);
@@ -977,6 +989,37 @@ async function ensureProductCalcium(p) {
   } finally {
     calciumInFlight.delete(p.id);
   }
+}
+
+// Убеждается, что у продукта известен кальций (подгружает при необходимости), и
+// проставляет его в записях рациона, которые ссылаются на этот продукт, но без
+// кальция. Пересчитывает дневной рацион. Возвращает обновлённый продукт.
+async function syncProductCalciumToRation(p) {
+  p = await ensureProductCalcium(p);
+  const per = unitPer(p);
+  if (per.calcium == null) return p; // так и осталось неизвестно
+  const per100 = productPer100(p); // кальций на 100 г (для граммовых записей)
+  const entries = await db.getAll('entries');
+  let changed = false;
+  for (const e of entries) {
+    if (e.productId !== p.id) continue;
+    if (e.unit === 'pcs') {
+      if (e.perPiece && e.perPiece.calcium == null && per.calcium != null) {
+        e.perPiece.calcium = per.calcium;
+        await db.put('entries', e);
+        changed = true;
+      }
+    } else if (e.per100 && e.per100.calcium == null && per100 && per100.calcium != null) {
+      e.per100.calcium = per100.calcium;
+      await db.put('entries', e);
+      changed = true;
+    }
+  }
+  if (changed) {
+    await refreshEntries();
+    if (state.tab === 'diary' || state.tab === 'stats') render();
+  }
+  return p;
 }
 
 // Строит заготовку карточки продукта из ответа ai.lookupFood.
